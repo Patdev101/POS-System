@@ -1,0 +1,1129 @@
+const state = {
+    token: localStorage.getItem('pos_token') || '',
+    user: null,
+    products: [],
+    locations: {},
+    cart: [],
+    paymentMethod: 'cash',
+    search: '',
+    sessionOpen: false,
+    sessionLocationId: 1,
+    currentSession: null,
+    lastCloseSummary: null,
+    viewAllSales: false,
+    sales: [],
+    salesSummary: {
+        total_sales: 0,
+        total_amount: 0,
+        voided_sales: 0,
+    },
+    reportRangeFrom: new Date().toISOString().slice(0, 10),
+    reportRangeTo: new Date().toISOString().slice(0, 10),
+    report: {
+        meta: {
+            total_sales: 0,
+            total_amount: 0,
+            payment_summary: {},
+        },
+        data: [],
+    },
+    notice: null,
+    customerName: '',
+    openingCash: '',
+    closingCash: '',
+    receivedAmount: '',
+    paymentReference: '',
+    taxRate: '',
+    lastReceipt: null,
+};
+state.customerName = '';
+let productSearchTimer = null;
+
+const app = document.getElementById('app');
+
+function formatCurrency(value) {
+    return new Intl.NumberFormat('en-PH', {
+        style: 'currency',
+        currency: 'PHP',
+    }).format(Number(value || 0));
+}
+
+function getSessionStock(product) {
+    return Number(product.stock_quantity || 0);
+}
+
+async function loadLocations() {
+    try {
+        const response = await fetch('/api/pos/locations', {
+            headers: getAuthHeaders(),
+        });
+        if (!response.ok) return;
+
+        const result = await response.json();
+        state.sessionLocationId = Number(result.configured_location_id || state.sessionLocationId);
+        state.locations = Object.fromEntries(
+            (result.data || []).map((location) => [
+                Number(location.id),
+                `${location.name || `Location ${location.id}`}${location.code ? ` (${location.code})` : ''}`,
+            ]),
+        );
+    } catch (error) {
+        state.locations = {};
+    }
+}
+
+async function viewReceiptFor(saleId) {
+    const response = await fetch(`/api/sales/${saleId}/receipt`, {
+        headers: getAuthHeaders(),
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+        setNotice(result.message || 'Unable to load the receipt.', 'error');
+        return;
+    }
+
+    const receipt = result.data;
+    const payment = receipt.payments?.[0];
+    state.lastReceipt = {
+        id: receipt.id,
+        sale_number: receipt.sale_number,
+        customer_name: receipt.customer_name || 'Walk-in Customer',
+        payment_method: payment?.method || 'cash',
+        subtotal: Number(receipt.subtotal || 0),
+        discount_total: Number(receipt.discount || 0),
+        tax_total: Number(receipt.tax || 0),
+        total: Number(receipt.total || 0),
+        received_amount: null,
+        change: null,
+        items: receipt.items || [],
+    };
+    setNotice(`Loaded receipt ${receipt.sale_number}.`, 'success');
+    renderDashboard();
+}
+
+function getAuthHeaders() {
+    return {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
+    };
+}
+
+function setNotice(message, variant = 'info') {
+    state.notice = { message, variant };
+    const notice = document.getElementById('notice');
+    if (!notice) return;
+
+    notice.className = `rounded-lg border px-3 py-2 text-sm ${
+        variant === 'error'
+            ? 'border-red-200 bg-red-50 text-red-700'
+            : variant === 'success'
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                : 'border-sky-200 bg-sky-50 text-sky-700'
+    }`;
+    notice.textContent = message;
+}
+
+function renderLogin() {
+    app.innerHTML = `
+        <div class="flex min-h-screen items-center justify-center">
+            <div class="w-full max-w-md rounded-2xl bg-white p-8 shadow-xl ring-1 ring-slate-200">
+                <div class="mb-6 text-center">
+                    <p class="text-xs font-semibold uppercase tracking-[0.2em] text-sky-600">POS</p>
+                    <h1 class="mt-2 text-3xl font-bold text-slate-900">Shogun Retail</h1>
+                </div>
+
+                <div id="notice" class="mb-4 hidden"></div>
+
+                <form id="loginForm" class="space-y-4">
+                    <div>
+                        <label class="mb-1 block text-sm font-medium text-slate-700">Email</label>
+                        <input name="email" type="email" class="w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none ring-0 transition focus:border-sky-500" placeholder="cashier@example.com" required />
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-sm font-medium text-slate-700">Password</label>
+                        <input name="password" type="password" class="w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none ring-0 transition focus:border-sky-500" placeholder="••••••••" required />
+                    </div>
+                    <button type="submit" class="w-full rounded-xl bg-sky-600 px-4 py-3 font-semibold text-white transition hover:bg-sky-700">Login</button>
+                </form>
+            </div>
+        </div>
+    `;
+
+    const loginForm = document.getElementById('loginForm');
+    loginForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const formData = new FormData(loginForm);
+        const payload = {
+            email: formData.get('email'),
+            password: formData.get('password'),
+        };
+
+        try {
+            const response = await fetch('/api/login', {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify(payload),
+            });
+
+            const result = await response.json();
+
+            if (!response.ok) {
+                setNotice(result.message || 'Login failed.', 'error');
+                return;
+            }
+
+            state.token = result.token;
+            localStorage.setItem('pos_token', state.token);
+            setNotice('Login successful. Opening cashier dashboard…', 'success');
+            await loadDashboard();
+        } catch (error) {
+            setNotice('Unable to reach POS API.', 'error');
+        }
+    });
+}
+
+async function loadCurrentSession() {
+    try {
+        const response = await fetch('/api/cash-sessions/current', {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            state.currentSession = null;
+            state.sessionOpen = false;
+            return;
+        }
+
+        const result = await response.json();
+        state.currentSession = result.data || null;
+        state.sessionOpen = Boolean(state.currentSession);
+        state.sessionLocationId = state.currentSession?.location_id || state.sessionLocationId;
+    } catch (error) {
+        state.currentSession = null;
+        state.sessionOpen = false;
+    }
+}
+
+async function openCashSession() {
+    const openingCash = document.getElementById('openingCash')?.value || state.openingCash || 0;
+    state.openingCash = openingCash;
+
+    const response = await fetch('/api/cash-sessions/open', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ opening_cash: Number(openingCash) }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+        setNotice(result.message || 'Unable to open cash session.', 'error');
+        return false;
+    }
+
+    state.sessionOpen = true;
+    state.lastCloseSummary = null;
+    await loadCurrentSession();
+    setNotice('Cash session opened successfully.', 'success');
+    return true;
+}
+
+async function closeCashSession() {
+    const closingCash = document.getElementById('closingCash')?.value || state.closingCash || 0;
+
+    const response = await fetch('/api/cash-sessions/close', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ closing_cash: Number(closingCash) }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+        setNotice(result.message || 'Unable to close cash session.', 'error');
+        return false;
+    }
+
+    state.sessionOpen = false;
+    state.currentSession = null;
+    state.cart = [];
+    state.customerName = '';
+    state.openingCash = '';
+    state.closingCash = '';
+    state.receivedAmount = '';
+    state.paymentReference = '';
+    state.lastCloseSummary = result.data || null;
+    setNotice(`Cash session closed. Variance: ${formatCurrency(result.data?.variance || 0)}`, 'success');
+    return true;
+}
+
+async function loadDashboard() {
+    try {
+        const userResponse = await fetch('/api/user', { headers: getAuthHeaders() });
+        if (!userResponse.ok) {
+            state.token = '';
+            localStorage.removeItem('pos_token');
+            renderLogin();
+            return;
+        }
+
+        state.user = await userResponse.json();
+        await loadCurrentSession();
+        await loadLocations();
+        await loadProducts();
+        await loadSales();
+        await loadSalesSummary();
+        await loadSalesReport();
+        renderDashboard();
+    } catch (error) {
+        setNotice('Unable to load the dashboard.', 'error');
+    }
+}
+
+async function loadProducts(search = '') {
+    const params = new URLSearchParams();
+    if (search) params.append('search', search);
+    params.append('location_id', String(state.sessionLocationId));
+
+    const response = await fetch(`/api/pos/products?${params.toString()}`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        setNotice('Unable to load products.', 'error');
+        return;
+    }
+
+    const result = await response.json();
+    state.products = result.data || [];
+
+    state.products.forEach((product) => {
+        (product.inventories || []).forEach((inventory) => {
+            const locationId = Number(inventory.location_id);
+            if (!locationId || state.locations[locationId]) return;
+
+            state.locations[locationId] =
+                inventory.location_name ||
+                inventory.location_code ||
+                `Location ${locationId}`;
+        });
+    });
+}
+
+function locationOptions() {
+    const locations = Object.entries(state.locations);
+    if (!locations.length) {
+        return `<option value="${state.sessionLocationId}">Location ${state.sessionLocationId}</option>`;
+    }
+
+    return locations
+        .map(([id, label]) => `<option value="${id}" ${Number(id) === Number(state.sessionLocationId) ? 'selected' : ''}>${label}</option>`)
+        .join('');
+}
+
+async function loadSales() {
+    try {
+        const response = await fetch('/api/sales', { headers: getAuthHeaders() });
+        if (!response.ok) {
+            return;
+        }
+
+        const result = await response.json();
+        state.sales = result.data || [];
+    } catch (error) {
+        state.sales = [];
+    }
+}
+
+async function loadSalesSummary() {
+    try {
+        const params = new URLSearchParams();
+        if (state.user?.role === 'manager' && state.viewAllSales) {
+            params.append('all', '1');
+        }
+
+        const response = await fetch(`/api/sales/summary?${params.toString()}`, {
+            headers: getAuthHeaders(),
+        });
+        if (!response.ok) {
+            return;
+        }
+
+        const result = await response.json();
+        state.salesSummary = result.meta || {
+            total_sales: 0,
+            total_amount: 0,
+            voided_sales: 0,
+        };
+    } catch (error) {
+        state.salesSummary = {
+            total_sales: 0,
+            total_amount: 0,
+            voided_sales: 0,
+        };
+    }
+}
+
+async function loadSalesReport() {
+    try {
+        const params = new URLSearchParams();
+        if (state.reportRangeFrom) params.append('from', state.reportRangeFrom);
+        if (state.reportRangeTo) params.append('to', state.reportRangeTo);
+        if (state.user?.role === 'manager' && state.viewAllSales) {
+            params.append('all', '1');
+        }
+
+        const response = await fetch(`/api/sales/report?${params.toString()}`, {
+            headers: getAuthHeaders(),
+        });
+
+        if (!response.ok) {
+            state.report = {
+                meta: {
+                    total_sales: 0,
+                    total_amount: 0,
+                    payment_summary: {},
+                },
+                data: [],
+            };
+            return;
+        }
+
+        const result = await response.json();
+        state.report = result || {
+            meta: {
+                total_sales: 0,
+                total_amount: 0,
+                payment_summary: {},
+            },
+            data: [],
+        };
+    } catch (error) {
+        state.report = {
+            meta: {
+                total_sales: 0,
+                total_amount: 0,
+                payment_summary: {},
+            },
+            data: [],
+        };
+    }
+}
+
+async function lookupByCode(code) {
+    const params = new URLSearchParams({ code, location_id: String(state.sessionLocationId) });
+
+    const response = await fetch(`/api/pos/products/lookup?${params.toString()}`, {
+        headers: getAuthHeaders(),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+        setNotice(result.message || `No product found for "${code}".`, 'error');
+        return null;
+    }
+
+    return result.data;
+}
+
+async function voidSale(saleId) {
+    const reason = window.prompt('Reason for voiding this sale (optional):', '') || '';
+
+    const response = await fetch(`/api/sales/${saleId}/void`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ reason }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+        setNotice(result.message || 'Unable to void this sale.', 'error');
+        return;
+    }
+
+    const restockedCount = (result.restocked || []).length;
+    setNotice(`Sale ${result.data?.sale_number || ''} voided. ${restockedCount} item(s) restocked.`, 'success');
+
+    await loadSales();
+    await loadSalesSummary();
+    renderDashboard();
+}
+
+async function refundSale(saleId) {
+    const reason = window.prompt('Reason for refunding this sale (optional):', '') || '';
+    const response = await fetch(`/api/sales/${saleId}/refund`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ reason }),
+    });
+    const result = await response.json();
+
+    if (!response.ok) {
+        setNotice(result.message || 'Unable to refund this sale.', 'error');
+        return;
+    }
+
+    setNotice(`Sale ${result.data?.sale_number || ''} refunded and inventory restocked.`, 'success');
+    await loadSales();
+    await loadSalesSummary();
+    renderDashboard();
+}
+
+async function printReceiptFor(saleId) {
+    const response = await fetch(`/api/sales/${saleId}/receipt/print`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        setNotice('Unable to load the printable receipt.', 'error');
+        return;
+    }
+
+    const text = await response.text();
+    const printWindow = window.open('', '_blank');
+
+    if (!printWindow) {
+        setNotice('Your browser blocked the receipt window.', 'error');
+        return;
+    }
+
+    printWindow.document.write(`<!doctype html><html><head><title>Receipt</title></head><body style="font-family:monospace;white-space:pre-wrap;padding:24px;">${text}</body></html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+}
+
+function addToCart(product) {
+    const availableStock = getSessionStock(product);
+    if (availableStock <= 0) {
+        setNotice(`"${product.name}" is out of stock.`, 'error');
+        return;
+    }
+
+    const item = state.cart.find((entry) => entry.id === product.id);
+
+    if (item) {
+        if (item.quantity >= item.stock_quantity) {
+            setNotice(`Only ${item.stock_quantity} unit(s) of "${item.name}" are available.`, 'error');
+            return;
+        }
+        item.quantity += 1;
+        renderDashboard();
+        return;
+    }
+
+    const defaultUnit = product.units?.find((unit) => unit.is_default) || product.units?.[0];
+
+    state.cart.push({
+        id: product.id,
+        name: product.name,
+        sku: product.sku,
+        unit_price: Number(product.selling_price || product.price || 0),
+        quantity: 1,
+        product_unit_id: defaultUnit?.id || 1,
+        location_id: state.sessionLocationId,
+        discount: 0,
+        stock_quantity: Number(product.stock_quantity || 0),
+    });
+
+    renderDashboard();
+}
+
+function updateCartItem(id, changes) {
+    state.cart = state.cart.map((item) => {
+        if (item.id !== id) return item;
+        return {
+            ...item,
+            ...changes,
+            quantity: Math.min(Number(changes.quantity ?? item.quantity), item.stock_quantity),
+        };
+    }).filter((item) => item.quantity > 0);
+
+    renderDashboard();
+}
+
+function getCartSummary() {
+    const subtotal = state.cart.reduce((sum, item) => sum + item.unit_price * item.quantity, 0);
+    const discount = state.cart.reduce((sum, item) => sum + Number(item.discount || 0) * item.quantity, 0);
+    const total = subtotal - discount;
+    return { subtotal, discount, total };
+}
+
+function cashPreview(total) {
+    const received = Number(state.receivedAmount || 0);
+    if (!state.receivedAmount) return 'Enter cash received to calculate change.';
+    const change = received - total;
+    return change >= 0
+        ? `Change for customer: ${formatCurrency(change)}`
+        : `Remaining balance: ${formatCurrency(Math.abs(change))}`;
+}
+
+function renderDashboard() {
+    const summary = getCartSummary();
+    const receipt = state.lastReceipt;
+
+    app.innerHTML = `
+        <div class="space-y-6 py-6">
+            <header class="flex flex-col gap-4 rounded-2xl bg-slate-900 p-5 text-white shadow-xl lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                    <p class="text-xs uppercase tracking-[0.2em] text-sky-300">Cashier</p>
+                    <h1 class="mt-1 text-2xl font-bold">POS Dashboard</h1>
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="rounded-xl bg-slate-800 px-3 py-2 text-sm">
+                        <span class="text-slate-300">Logged in:</span>
+                        <span class="font-semibold">${state.user?.name || 'Cashier'}</span>
+                        ${state.user?.role === 'manager' ? '<span class="ml-2 rounded-full bg-sky-500 px-2 py-0.5 text-xs font-semibold uppercase">Manager</span>' : ''}
+                    </div>
+                    <button id="logoutButton" class="rounded-xl border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Logout</button>
+                </div>
+            </header>
+
+            <div id="notice" class="${state.notice ? '' : 'hidden'} rounded-lg border px-3 py-2 text-sm ${
+                state.notice?.variant === 'error'
+                    ? 'border-red-200 bg-red-50 text-red-700'
+                    : state.notice?.variant === 'success'
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border-sky-200 bg-sky-50 text-sky-700'
+            }">${state.notice?.message || ''}</div>
+
+            <div class="grid gap-4 md:grid-cols-3">
+                <div class="rounded-2xl bg-white p-4 shadow-lg ring-1 ring-slate-200">
+                    <div class="flex items-center justify-between">
+                        <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Completed sales</p>
+                        ${state.user?.role === 'manager' ? `
+                            <label class="flex items-center gap-1 text-xs font-medium text-slate-500">
+                                <input id="viewAllSalesToggle" type="checkbox" ${state.viewAllSales ? 'checked' : ''} />
+                                All cashiers
+                            </label>
+                        ` : ''}
+                    </div>
+                    <p class="mt-2 text-3xl font-bold text-slate-900">${state.salesSummary.total_sales}</p>
+                </div>
+                <div class="rounded-2xl bg-white p-4 shadow-lg ring-1 ring-slate-200">
+                    <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Total sales</p>
+                    <p class="mt-2 text-3xl font-bold text-slate-900">${formatCurrency(state.salesSummary.total_amount)}</p>
+                </div>
+                <div class="rounded-2xl bg-white p-4 shadow-lg ring-1 ring-slate-200">
+                    <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Voided sales</p>
+                    <p class="mt-2 text-3xl font-bold text-slate-900">${state.salesSummary.voided_sales}</p>
+                </div>
+            </div>
+
+            <div class="grid gap-6 lg:grid-cols-[1.4fr_0.8fr]">
+                <section class="rounded-2xl bg-white p-4 shadow-lg ring-1 ring-slate-200">
+                    <div class="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <h2 class="text-xl font-bold text-slate-900">Products</h2>
+                        <div class="flex flex-wrap gap-2">
+                            <span class="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">${state.locations[state.sessionLocationId] || `Location ${state.sessionLocationId}`}</span>
+                            <input id="productSearch" type="text" value="${state.search}" placeholder="Search SKU or name" class="rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500" />
+                            <button id="refreshProducts" class="rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-200">Refresh</button>
+                        </div>
+                    </div>
+
+                    <div class="mb-4 flex gap-2">
+                        <input id="barcodeInput" type="text" placeholder="Scan barcode or SKU, then press Enter" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500" />
+                    </div>
+
+                    <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        ${state.products.length ? state.products.map((product) => `
+                            <article class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                <div class="mb-3 flex items-start justify-between gap-2">
+                                    <div>
+                                        <h3 class="font-semibold text-slate-900">${product.name}</h3>
+                                        <p class="text-xs text-slate-500">${product.sku}</p>
+                                    </div>
+                                    <span class="rounded-full ${getSessionStock(product) > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'} px-2 py-1 text-xs font-medium">${getSessionStock(product)} available at ${state.locations[state.sessionLocationId] || `Location ${state.sessionLocationId}`}</span>
+                                </div>
+                                <p class="mb-3 text-lg font-bold text-slate-900">${formatCurrency(product.selling_price || 0)}</p>
+                                <button data-product-id="${product.id}" class="add-product-btn w-full rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300" ${getSessionStock(product) <= 0 ? 'disabled' : ''}>${getSessionStock(product) <= 0 ? 'Unavailable at selling location' : 'Add to cart'}</button>
+                            </article>
+                        `).join('') : '<p class="text-sm text-slate-500">No products found.</p>'}
+                    </div>
+                </section>
+
+                <aside class="rounded-2xl bg-white p-4 shadow-lg ring-1 ring-slate-200">
+                    <div class="mb-4 flex items-center justify-between">
+                        <h2 class="text-xl font-bold text-slate-900">Cart</h2>
+                        <span class="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">${state.cart.length} items</span>
+                    </div>
+
+                    <div class="mb-4 space-y-3">
+                        ${state.cart.length ? state.cart.map((item) => `
+                            <div class="rounded-xl border border-slate-200 p-3">
+                                <div class="flex items-start justify-between gap-3">
+                                    <div>
+                                        <h3 class="font-medium text-slate-900">${item.name}</h3>
+                                        <p class="text-xs text-slate-500">${formatCurrency(item.unit_price)} / item</p>
+                                    </div>
+                                    <button data-remove-id="${item.id}" class="remove-item-btn text-xs font-medium text-red-600 hover:text-red-700">Remove</button>
+                                </div>
+                                <div class="mt-3 flex items-center justify-between gap-2">
+                                    <div class="flex items-center gap-2">
+                                        <button data-qty-id="${item.id}" data-step="-1" class="qty-btn h-8 w-8 rounded-lg bg-slate-100 text-lg font-semibold hover:bg-slate-200">-</button>
+                                        <span class="min-w-8 text-center text-sm font-semibold">${item.quantity}</span>
+                                        <button data-qty-id="${item.id}" data-step="1" class="qty-btn h-8 w-8 rounded-lg bg-slate-100 text-lg font-semibold hover:bg-slate-200">+</button>
+                                    </div>
+                                    <div class="text-sm font-bold text-slate-900">${formatCurrency(item.unit_price * item.quantity)}</div>
+                                </div>
+                            </div>
+                        `).join('') : '<p class="text-sm text-slate-500">Cart is empty.</p>'}
+                    </div>
+
+                    <div class="mb-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+                        <div class="flex justify-between"><span>Subtotal</span><span>${formatCurrency(summary.subtotal)}</span></div>
+                        <div class="mt-2 flex justify-between"><span>Discount</span><span>-${formatCurrency(summary.discount)}</span></div>
+                        <div class="mt-3 flex justify-between border-t border-slate-200 pt-2 text-base font-bold text-slate-900"><span>Total</span><span>${formatCurrency(summary.total)}</span></div>
+                    </div>
+
+                    <div class="mb-3 rounded-xl border p-3 text-sm ${state.sessionOpen ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}">
+                        ${state.sessionOpen ? `
+                            <p class="font-semibold">Register open — ${state.locations[state.currentSession?.location_id] || `Location ${state.currentSession?.location_id ?? ''}`}</p>
+                            <p class="mt-1 text-xs">Opening cash: ${formatCurrency(state.currentSession?.opening_cash || 0)} · Expected cash: ${formatCurrency(state.currentSession?.expected_cash || 0)}</p>
+                        ` : `
+                            <p class="font-semibold">No open cash session</p>
+                            <p class="mt-1 text-xs">Open the register before ringing up sales.</p>
+                        `}
+                        ${state.lastCloseSummary ? `
+                            <p class="mt-2 border-t border-current/20 pt-2 text-xs">
+                                Last close — expected ${formatCurrency(state.lastCloseSummary.expected_cash)},
+                                actual ${formatCurrency(state.lastCloseSummary.actual_cash)},
+                                variance <span class="font-semibold">${formatCurrency(state.lastCloseSummary.variance)}</span>
+                            </p>
+                        ` : ''}
+                    </div>
+
+                    <div class="space-y-3">
+                        <div class="grid grid-cols-2 gap-2">
+                            <label class="text-sm font-medium text-slate-700">
+                                Opening cash
+                                <input id="openingCash" type="number" min="0" step="0.01" value="${state.openingCash}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500 disabled:bg-slate-100" placeholder="0.00" ${state.sessionOpen ? 'disabled' : ''} />
+                            </label>
+                            <label class="text-sm font-medium text-slate-700">
+                                Register location
+                                <div class="mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                                    ${state.locations[state.sessionLocationId] || `Location ${state.sessionLocationId}`}
+                                </div>
+                            </label>
+                        </div>
+
+                        <div>
+                            <label class="text-sm font-medium text-slate-700">
+                                Closing cash
+                                <input id="closingCash" type="number" min="0" step="0.01" value="${state.closingCash}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500 disabled:bg-slate-100" placeholder="0.00" ${state.sessionOpen ? '' : 'disabled'} />
+                            </label>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <label class="text-sm font-medium text-slate-700">
+                                Customer name
+                                <input id="customerName" type="text" value="${state.customerName}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500" placeholder="Walk-in Customer" />
+                            </label>
+                            <label class="text-sm font-medium text-slate-700">
+                                Payment
+                                <select id="paymentMethod" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500">
+                                    <option value="cash" ${state.paymentMethod === 'cash' ? 'selected' : ''}>Cash</option>
+                                    <option value="card" ${state.paymentMethod === 'card' ? 'selected' : ''}>Card</option>
+                                    <option value="gcash" ${state.paymentMethod === 'gcash' ? 'selected' : ''}>GCash</option>
+                                </select>
+                            </label>
+                            ${state.paymentMethod === 'cash' ? `
+                                <label class="text-sm font-medium text-slate-700">
+                                    Cash received
+                                    <input id="receivedAmount" type="number" min="0" step="0.01" value="${state.receivedAmount}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500" placeholder="0.00" />
+                                    <p id="cashPreview" class="mt-2 font-semibold text-emerald-700">${cashPreview(summary.total)}</p>
+                                </label>
+                            ` : '<div class="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">No cash amount is required. Complete the card terminal or GCash payment, then record its reference below.</div>'}
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <label class="text-sm font-medium text-slate-700">
+                                Tax rate (%)
+                                <input id="taxRate" type="number" min="0" max="100" step="0.01" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500" placeholder="0" value="${state.taxRate ?? ''}" />
+                            </label>
+                            <label class="text-sm font-medium text-slate-700">
+                                Reference
+                                <input id="paymentReference" type="text" value="${state.paymentReference}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500 disabled:bg-slate-100" placeholder="${state.paymentMethod === 'card' ? 'Terminal approval code' : state.paymentMethod === 'gcash' ? 'GCash transaction reference' : 'Not required'}" ${state.paymentMethod === 'cash' ? 'disabled' : ''} />
+                            </label>
+                        </div>
+                        ${state.paymentMethod === 'gcash' ? `
+                            <div class="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800">
+                                <p class="font-semibold">GCash QR payment</p>
+                                <p class="mt-1">Enter the GCash transaction reference after the customer pays. The QR below is a payment reference prompt; configure your merchant QR payload before production.</p>
+                                <img class="mx-auto mt-2 h-32 w-32 rounded-lg bg-white p-2" alt="GCash payment QR" src="https://quickchart.io/qr?text=${encodeURIComponent(`GCASH|amount=${summary.total.toFixed(2)}|reference=${document.getElementById('paymentReference')?.value || 'PENDING'}`)}&size=160" />
+                            </div>
+                        ` : ''}
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <button id="openSessionBtn" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50" ${state.sessionOpen ? 'disabled' : ''}>Open session</button>
+                            <button id="closeSessionBtn" class="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50" ${state.sessionOpen ? '' : 'disabled'}>Close session</button>
+                        </div>
+
+                        <button id="checkoutBtn" class="w-full rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50" ${state.sessionOpen && state.cart.length ? '' : 'disabled'}>
+                            ${state.sessionOpen ? 'Checkout' : 'Open a session to checkout'}
+                        </button>
+                    </div>
+                </aside>
+            </div>
+
+            <section class="space-y-6">
+                <div class="rounded-2xl bg-white p-4 shadow-lg ring-1 ring-slate-200">
+                    <div class="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <h2 class="text-xl font-bold text-slate-900">Sales report</h2>
+                        <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <label class="text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+                                <span class="sr-only">From date</span>
+                                <input id="reportFromDate" type="date" value="${state.reportRangeFrom}" class="rounded-xl border border-slate-300 px-2 py-2 text-sm text-slate-700 outline-none focus:border-sky-500" />
+                            </label>
+                            <label class="text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
+                                <span class="sr-only">To date</span>
+                                <input id="reportToDate" type="date" value="${state.reportRangeTo}" class="rounded-xl border border-slate-300 px-2 py-2 text-sm text-slate-700 outline-none focus:border-sky-500" />
+                            </label>
+                            <button id="applyReportBtn" class="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-700">Apply</button>
+                        </div>
+                    </div>
+
+                    <div class="mb-4 grid gap-3 md:grid-cols-3">
+                        <div class="rounded-xl bg-slate-50 p-3">
+                            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Report sales</p>
+                            <p class="mt-2 text-2xl font-bold text-slate-900">${state.report.meta.total_sales ?? 0}</p>
+                        </div>
+                        <div class="rounded-xl bg-slate-50 p-3">
+                            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Report amount</p>
+                            <p class="mt-2 text-2xl font-bold text-slate-900">${formatCurrency(state.report.meta.total_amount ?? 0)}</p>
+                        </div>
+                        <div class="rounded-xl bg-slate-50 p-3">
+                            <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Payment mix</p>
+                            <div class="mt-2 space-y-1 text-sm text-slate-700">
+                                ${Object.keys(state.report.meta.payment_summary || {}).length ? Object.entries(state.report.meta.payment_summary).map(([method, amount]) => `
+                                    <div class="flex justify-between gap-2"><span class="capitalize">${method}</span><span>${formatCurrency(amount)}</span></div>
+                                `).join('') : '<p class="text-xs text-slate-500">No payment data.</p>'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="rounded-2xl bg-white p-4 shadow-lg ring-1 ring-slate-200">
+                    <div class="mb-3 flex items-center justify-between">
+                        <h2 class="text-xl font-bold text-slate-900">Recent sales</h2>
+                        <span class="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">${state.sales.length} records</span>
+                    </div>
+                    <div class="overflow-hidden rounded-xl border border-slate-200">
+                        <table class="min-w-full divide-y divide-slate-200 text-left text-sm">
+                            <thead class="bg-slate-50 text-slate-600">
+                                <tr>
+                                    <th class="px-3 py-2 font-medium">Sale #</th>
+                                    <th class="px-3 py-2 font-medium">Customer</th>
+                                    <th class="px-3 py-2 font-medium">Total</th>
+                                    <th class="px-3 py-2 font-medium">Status</th>
+                                    <th class="px-3 py-2 font-medium">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-200 bg-white">
+                                ${state.sales.length ? state.sales.slice(0, 6).map((sale) => `
+                                    <tr>
+                                        <td class="px-3 py-2 font-medium text-slate-700">${sale.sale_number || 'N/A'}</td>
+                                        <td class="px-3 py-2 text-slate-600">${sale.customer?.name || 'Walk-in Customer'}</td>
+                                        <td class="px-3 py-2 font-semibold text-slate-900">${formatCurrency(sale.total || 0)}</td>
+                                        <td class="px-3 py-2">
+                                            <span class="rounded-full px-2 py-1 text-xs font-medium ${sale.status === 'voided' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}">${sale.status || 'completed'}</span>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <div class="flex gap-2">
+                                                <button type="button" data-view-id="${sale.id}" class="view-sale-btn rounded-lg bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200">View receipt</button>
+                                                <button data-print-id="${sale.id}" class="print-sale-btn text-xs font-medium text-sky-600 hover:text-sky-700">Print</button>
+                                                ${sale.status === 'completed' ? `<button data-void-id="${sale.id}" class="void-sale-btn text-xs font-medium text-red-600 hover:text-red-700">Void</button><button data-refund-id="${sale.id}" class="refund-sale-btn text-xs font-medium text-amber-600 hover:text-amber-700">Refund</button>` : ''}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="5" class="px-3 py-4 text-center text-slate-500">No sales yet.</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="rounded-2xl bg-white p-4 shadow-lg ring-1 ring-slate-200">
+                    <div class="mb-3 flex items-center justify-between">
+                        <h2 class="text-xl font-bold text-slate-900">Last receipt</h2>
+                        <button id="printReceiptBtn" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 ${receipt ? '' : 'cursor-not-allowed opacity-50'}" ${receipt ? '' : 'disabled'}>Print receipt</button>
+                    </div>
+
+                    ${receipt ? `
+                        <div class="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                            <div class="flex items-center justify-between border-b border-slate-200 pb-2">
+                                <div>
+                                    <p class="text-xs uppercase tracking-[0.2em] text-slate-500">Receipt</p>
+                                    <h3 class="text-lg font-bold text-slate-900">${receipt.sale_number}</h3>
+                                </div>
+                                <span class="rounded-full bg-slate-900 px-2 py-1 text-xs font-medium text-white">${receipt.payment_method}</span>
+                            </div>
+
+                            <div class="space-y-2 text-sm text-slate-600">
+                                <div class="flex justify-between"><span>Customer</span><span>${receipt.customer_name}</span></div>
+                                <div class="flex justify-between"><span>Items</span><span>${receipt.items.length}</span></div>
+                                <div class="flex justify-between"><span>Subtotal</span><span>${formatCurrency(receipt.subtotal || 0)}</span></div>
+                                <div class="flex justify-between"><span>Discount</span><span>-${formatCurrency(receipt.discount_total || 0)}</span></div>
+                                <div class="flex justify-between"><span>Tax</span><span>${formatCurrency(receipt.tax_total || 0)}</span></div>
+                                <div class="flex justify-between border-t border-slate-200 pt-2 text-base font-bold text-slate-900"><span>Total</span><span>${formatCurrency(receipt.total || 0)}</span></div>
+                                ${receipt.payment_method === 'cash' && receipt.received_amount !== null ? `
+                                    <div class="flex justify-between"><span>Cash received</span><span>${formatCurrency(receipt.received_amount || 0)}</span></div>
+                                    <div class="flex justify-between font-semibold text-emerald-700"><span>Change</span><span>${formatCurrency(receipt.change || 0)}</span></div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    ` : '<p class="text-sm text-slate-500">No completed sale yet. The most recent receipt will appear here.</p>'}
+                </div>
+            </section>
+        </div>
+    `;
+
+    document.getElementById('logoutButton').addEventListener('click', () => {
+        state.token = '';
+        state.user = null;
+        state.cart = [];
+        state.currentSession = null;
+        state.sessionOpen = false;
+        state.lastCloseSummary = null;
+        state.lastReceipt = null;
+        localStorage.removeItem('pos_token');
+        app.innerHTML = '';
+        renderLogin();
+    });
+
+    document.getElementById('productSearch').addEventListener('input', (event) => {
+        state.search = event.target.value;
+        clearTimeout(productSearchTimer);
+        productSearchTimer = setTimeout(async () => {
+            const search = state.search;
+            await loadProducts(search);
+            if (search !== state.search) return;
+
+            renderDashboard();
+            const searchInput = document.getElementById('productSearch');
+            if (searchInput) {
+                searchInput.focus();
+                searchInput.setSelectionRange(search.length, search.length);
+            }
+        }, 250);
+    });
+
+    document.getElementById('refreshProducts').addEventListener('click', async () => {
+        await loadProducts(state.search);
+        renderDashboard();
+    });
+
+    document.getElementById('openSessionBtn').addEventListener('click', async () => {
+        await openCashSession();
+        await loadSales();
+        await loadSalesSummary();
+        renderDashboard();
+    });
+
+    document.getElementById('closeSessionBtn').addEventListener('click', async () => {
+        await closeCashSession();
+        await loadSales();
+        await loadSalesSummary();
+        renderDashboard();
+    });
+
+    const printReceiptBtn = document.getElementById('printReceiptBtn');
+    if (printReceiptBtn && state.lastReceipt) {
+        printReceiptBtn.addEventListener('click', () => {
+            printReceiptFor(state.lastReceipt.id);
+        });
+    }
+
+    const barcodeInput = document.getElementById('barcodeInput');
+    if (barcodeInput) {
+        barcodeInput.addEventListener('keydown', async (event) => {
+            if (event.key !== 'Enter') return;
+
+            const code = barcodeInput.value.trim();
+            if (!code) return;
+
+            const product = await lookupByCode(code);
+
+            if (product) {
+                addToCart(product);
+                setNotice(`Added "${product.name}" to cart.`, 'success');
+                barcodeInput.value = '';
+                document.getElementById('barcodeInput')?.focus();
+            }
+        });
+    }
+
+    document.getElementById('paymentMethod').addEventListener('change', (event) => {
+        state.paymentMethod = event.target.value;
+        renderDashboard();
+    });
+
+    document.getElementById('customerName').addEventListener('input', (event) => {
+        state.customerName = event.target.value;
+    });
+
+    document.getElementById('openingCash').addEventListener('input', (event) => {
+        state.openingCash = event.target.value;
+    });
+
+    document.getElementById('closingCash').addEventListener('input', (event) => {
+        state.closingCash = event.target.value;
+    });
+
+    const receivedAmountInput = document.getElementById('receivedAmount');
+    if (receivedAmountInput) {
+        receivedAmountInput.addEventListener('input', (event) => {
+            state.receivedAmount = event.target.value;
+            const preview = document.getElementById('cashPreview');
+            if (preview) preview.textContent = cashPreview(getCartSummary().total);
+        });
+    }
+
+    document.getElementById('paymentReference').addEventListener('input', (event) => {
+        state.paymentReference = event.target.value;
+    });
+
+    document.getElementById('taxRate').addEventListener('input', (event) => {
+        state.taxRate = event.target.value;
+    });
+
+    const applyReportBtn = document.getElementById('applyReportBtn');
+    if (applyReportBtn) {
+        applyReportBtn.addEventListener('click', async () => {
+            const fromDate = document.getElementById('reportFromDate')?.value || '';
+            const toDate = document.getElementById('reportToDate')?.value || '';
+            state.reportRangeFrom = fromDate;
+            state.reportRangeTo = toDate;
+            await loadSalesReport();
+            renderDashboard();
+        });
+    }
+
+    const viewAllSalesToggle = document.getElementById('viewAllSalesToggle');
+    if (viewAllSalesToggle) {
+        viewAllSalesToggle.addEventListener('change', async (event) => {
+            state.viewAllSales = event.target.checked;
+            await loadSalesSummary();
+            renderDashboard();
+        });
+    }
+
+    document.querySelectorAll('.void-sale-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+            voidSale(Number(button.dataset.voidId));
+        });
+    });
+
+    document.querySelectorAll('.refund-sale-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+            refundSale(Number(button.dataset.refundId));
+        });
+    });
+
+    document.querySelectorAll('.view-sale-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+            viewReceiptFor(Number(button.dataset.viewId));
+        });
+    });
+
+    document.querySelectorAll('.print-sale-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+            printReceiptFor(Number(button.dataset.printId));
+        });
+    });
+
+    document.getElementById('checkoutBtn').addEventListener('click', async () => {
+        if (!state.cart.length) {
+            setNotice('Cart is empty.', 'error');
+            return;
+        }
+
+        const receivedAmount = document.getElementById('receivedAmount')?.value || '';
+        const taxRate = Number(document.getElementById('taxRate').value || 0);
+
+        const payload = {
+            payment_method: state.paymentMethod,
+            received_amount: state.paymentMethod === 'cash' ? receivedAmount : null,
+            payment_reference: document.getElementById('paymentReference')?.value || null,
+            tax_rate: taxRate,
+            customer_name: document.getElementById('customerName').value.trim() || 'Walk-in Customer',
+            items: state.cart.map((item) => ({
+                product_id: item.id,
+                product_unit_id: item.product_unit_id,
+                quantity: item.quantity,
+                location_id: item.location_id,
+                discount: item.discount || 0,
+            })),
+        };
+
+        try {
+            const response = await fetch('/api/pos/checkout', {
+                method: 'POST',
+                headers: getAuthHeaders(),
+                body: JSON.stringify(payload),
+            });
+            const result = await response.json();
+
+            if (!response.ok) {
+                setNotice(result.message || 'Checkout failed.', 'error');
+                return;
+            }
+
+            setNotice(`Sale ${result.sale_number} completed successfully.`, 'success');
+            state.cart = [];
+            state.lastReceipt = {
+                id: result.id,
+                sale_number: result.sale_number,
+                customer_name: result.customer_name || 'Walk-in Customer',
+                payment_method: result.payment_method || 'cash',
+                subtotal: Number(result.subtotal || 0),
+                discount_total: Number(result.discount_total || 0),
+                tax_total: Number(result.tax_total || 0),
+                total: Number(result.total || 0),
+                received_amount: state.paymentMethod === 'cash' ? Number(receivedAmount || 0) : null,
+                change: state.paymentMethod === 'cash' ? Number((Number(receivedAmount || 0) - Number(result.total || 0)).toFixed(2)) : null,
+                items: result.items || [],
+            };
+            await loadCurrentSession();
+            await loadSales();
+            await loadSalesSummary();
+            renderDashboard();
+        } catch (error) {
+            setNotice('Checkout request failed.', 'error');
+        }
+    });
+
+    document.querySelectorAll('.add-product-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+            const productId = Number(button.dataset.productId);
+            const product = state.products.find((item) => item.id === productId);
+            if (product) addToCart(product);
+        });
+    });
+
+    document.querySelectorAll('.remove-item-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+            updateCartItem(Number(button.dataset.removeId), { quantity: 0 });
+        });
+    });
+
+    document.querySelectorAll('.qty-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+            const id = Number(button.dataset.qtyId);
+            const step = Number(button.dataset.step);
+            const item = state.cart.find((entry) => entry.id === id);
+            if (!item) return;
+            updateCartItem(id, { quantity: Math.max(0, item.quantity + step) });
+        });
+    });
+}
+
+if (state.token) {
+    loadDashboard();
+} else {
+    renderLogin();
+}

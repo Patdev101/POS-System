@@ -1,0 +1,119 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ config('app.name') }} - POS</title>
+    <link rel="stylesheet" href="/pos-assets/style.css">
+</head>
+<body>
+    <div id="app" hidden>
+        <header class="pos-header">
+            <div class="pos-header-left">
+                <strong>{{ config('app.name') }}</strong>
+                <span id="location-badge" class="badge">ðŸ“ ...</span>
+            </div>
+            <div class="pos-header-right">
+                <span id="cashier-name"></span>
+                <span id="register-status" class="badge">Register: ...</span>
+                <button id="close-register-btn" class="link-btn" hidden>Close Register</button>
+                <button id="logout-btn" class="link-btn">Logout</button>
+            </div>
+        </header>
+
+        <div id="error-banner" class="error-banner" hidden></div>
+
+        <main class="pos-main">
+            <section class="products-pane">
+                <div class="search-row">
+                    <input type="text" id="search-input" placeholder="ðŸ”Ž Search by name, SKU, or scan barcode...">
+                </div>
+                <div id="products-grid" class="products-grid"></div>
+            </section>
+
+            <aside class="cart-pane">
+                <h2>Cart</h2>
+                <div id="cart-items" class="cart-items"></div>
+
+                <div class="cart-totals">
+                    <div class="totals-row">
+                        <span>Subtotal</span>
+                        <span id="cart-subtotal">â‚±0.00</span>
+                    </div>
+                    <div class="totals-row">
+                        <span>Discount</span>
+                        <span id="cart-discount">â‚±0.00</span>
+                    </div>
+                    <div class="totals-row">
+                        <label for="tax-rate-input">Tax %</label>
+                        <input type="number" id="tax-rate-input" value="0" min="0" max="100" step="0.01">
+                    </div>
+                    <div class="totals-row">
+                        <span>Tax</span>
+                        <span id="cart-tax">â‚±0.00</span>
+                    </div>
+                    <div class="totals-row total-row">
+                        <span>Total</span>
+                        <span id="cart-total">â‚±0.00</span>
+                    </div>
+                </div>
+
+                <label for="customer-name-input">Customer (optional)</label>
+                <input type="text" id="customer-name-input" placeholder="Walk-in Customer">
+
+                <label for="payment-method-select">Payment Method</label>
+                <select id="payment-method-select">
+                    <option value="cash">Cash</option>
+                    <option value="card">Card</option>
+                    <option value="gcash">GCash</option>
+                </select>
+
+                <div id="cash-fields">
+                    <label for="received-amount-input">Received Amount</label>
+                    <input type="number" id="received-amount-input" min="0" step="0.01">
+                    <div class="totals-row">
+                        <span>Change</span>
+                        <span id="change-amount">â‚±0.00</span>
+                    </div>
+                </div>
+
+                <div id="reference-fields" hidden>
+                    <label for="payment-reference-input">Payment Reference</label>
+                    <input type="text" id="payment-reference-input">
+                </div>
+
+                <button id="checkout-btn" class="checkout-btn" disabled>Checkout</button>
+            </aside>
+        </main>
+    </div>
+
+    <div id="open-register-modal" class="modal-overlay" hidden>
+        <div class="modal">
+            <h2>Open Register</h2>
+            <label for="opening-cash-input">Opening Cash</label>
+            <input type="number" id="opening-cash-input" min="0" step="0.01" value="0">
+            <div id="open-register-error" class="error-banner" hidden></div>
+            <button id="open-register-btn">Open Register</button>
+        </div>
+    </div>
+
+    <div id="close-register-modal" class="modal-overlay" hidden>
+        <div class="modal">
+            <h2>Close Register</h2>
+            <p>Expected cash: <strong id="expected-cash-display">â‚±0.00</strong></p>
+            <label for="closing-cash-input">Actual Cash Counted</label>
+            <input type="number" id="closing-cash-input" min="0" step="0.01" value="0">
+            <div id="close-register-error" class="error-banner" hidden></div>
+            <div class="modal-actions">
+                <button id="close-register-cancel-btn" class="link-btn">Cancel</button>
+                <button id="close-register-confirm-btn">Close Register</button>
+            </div>
+        </div>
+    </div>
+
+
+    <script src="/pos-assets/app.js"></script>
+    <script>Pos.initPosPage();</script>
+</body>
+</html>
+

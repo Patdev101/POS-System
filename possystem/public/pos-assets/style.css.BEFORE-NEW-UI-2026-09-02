@@ -1,0 +1,373 @@
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #f4f6f8;
+    color: #1e293b;
+}
+
+/* ---------- Login ---------- */
+
+.login-body {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    background: #eaf1f8;
+    padding: 20px;
+}
+
+.login-panel {
+    width: min(100%, 380px);
+    background: #fff;
+    padding: 32px;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
+.login-panel h1 {
+    margin: 0 0 4px;
+    font-size: 22px;
+}
+
+.login-subtitle {
+    margin: 0 0 24px;
+    color: #64748b;
+}
+
+.login-panel label,
+.pos-main label,
+.modal label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: #475569;
+    margin: 12px 0 4px;
+}
+
+.login-panel input,
+.pos-main input,
+.pos-main select,
+.modal input,
+.modal select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.login-panel button,
+.checkout-btn,
+.modal button:not(.link-btn) {
+    width: 100%;
+    margin-top: 20px;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    background: #2563eb;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.login-panel button:hover,
+.checkout-btn:hover:not(:disabled),
+.modal button:not(.link-btn):hover {
+    background: #1d4ed8;
+}
+
+.checkout-btn:disabled {
+    background: #94a3b8;
+    cursor: not-allowed;
+}
+
+/* ---------- Layout ---------- */
+
+.pos-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 20px;
+    background: #fff;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.pos-header-left, .pos-header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.badge {
+    background: #eef2ff;
+    color: #3730a3;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.link-btn {
+    background: none;
+    border: none;
+    color: #2563eb;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.pos-main {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 16px;
+    padding: 16px;
+    align-items: start;
+}
+
+.products-pane {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+}
+
+.search-row input {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    font-size: 15px;
+}
+
+.products-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.product-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.product-card.out-of-stock {
+    opacity: 0.85;
+}
+
+.product-name {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.product-sku {
+    font-size: 12px;
+    color: #64748b;
+}
+
+.product-price {
+    font-size: 16px;
+    font-weight: 700;
+    margin-top: 4px;
+}
+
+.product-stock {
+    font-size: 12px;
+    color: #16a34a;
+}
+
+.product-stock.out {
+    color: #dc2626;
+    font-weight: 600;
+}
+
+.product-card select {
+    margin-top: 4px;
+    font-size: 12px;
+    padding: 6px;
+}
+
+.product-card button {
+    margin-top: 8px;
+    padding: 8px;
+    border: none;
+    border-radius: 6px;
+    background: #2563eb;
+    color: #fff;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.product-card button:disabled {
+    background: #cbd5e1;
+    cursor: not-allowed;
+}
+
+.other-locations-toggle {
+    background: none;
+    border: none;
+    color: #7c3aed;
+    font-size: 11px;
+    text-align: left;
+    padding: 0;
+    cursor: pointer;
+    margin-top: 2px;
+}
+
+.other-locations-list {
+    font-size: 11px;
+    color: #475569;
+    background: #f8fafc;
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin-top: 4px;
+}
+
+.other-locations-list div {
+    display: flex;
+    justify-content: space-between;
+}
+
+.cart-pane {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    position: sticky;
+    top: 16px;
+}
+
+.cart-pane h2 {
+    margin-top: 0;
+    font-size: 16px;
+}
+
+.cart-items {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+}
+
+.cart-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 13px;
+    gap: 6px;
+}
+
+.cart-item-info {
+    flex: 1;
+}
+
+.cart-item-name {
+    font-weight: 600;
+}
+
+.cart-item-qty-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.cart-item-qty-controls button {
+    width: 22px;
+    height: 22px;
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.cart-item-remove {
+    color: #dc2626;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.cart-totals {
+    border-top: 1px solid #e2e8f0;
+    padding-top: 8px;
+}
+
+.totals-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    padding: 4px 0;
+}
+
+.totals-row input {
+    width: 70px;
+    padding: 4px 6px;
+}
+
+.total-row {
+    font-size: 16px;
+    font-weight: 700;
+    border-top: 1px solid #e2e8f0;
+    margin-top: 4px;
+    padding-top: 8px;
+}
+
+.error-banner {
+    background: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 12px 16px 0;
+    font-size: 13px;
+}
+
+/* ---------- Modals ---------- */
+
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.5);
+    display: grid;
+    place-items: center;
+    z-index: 50;
+}
+
+.modal {
+    background: #fff;
+    border-radius: 12px;
+    padding: 24px;
+    width: min(100%, 380px);
+}
+
+.modal h2 {
+    margin-top: 0;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 20px;
+}
+
+.modal-actions button {
+    flex: 1;
+    margin-top: 0 !important;
+}
+
+.receipt-modal {
+    width: min(100%, 340px);
+    font-family: "Courier New", monospace;
+}
+
+#receipt-content {
+    white-space: pre-wrap;
+    font-size: 13px;
+}
