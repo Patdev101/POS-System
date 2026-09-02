@@ -24,5 +24,23 @@ class DatabaseSeeder extends Seeder
                 'role' => 'cashier',
             ]
         );
+
+        User::updateOrCreate(
+            ['email' => 'manager@shogun.local'],
+            [
+                'name' => 'Manager User',
+                'password' => Hash::make('password123'),
+                'role' => 'manager',
+            ]
+        );
+
+        User::updateOrCreate(
+            ['email' => 'admin@shogun.local'],
+            [
+                'name' => 'Admin User',
+                'password' => Hash::make('password123'),
+                'role' => 'admin',
+            ]
+        );
     }
 }

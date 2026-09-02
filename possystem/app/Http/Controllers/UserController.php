@@ -23,7 +23,7 @@ class UserController extends Controller
 
         return response()->json([
             'data' => User::query()
-                ->select(['id', 'name', 'email', 'role', 'created_at'])
+                ->select(['id', 'name', 'email', 'role', 'is_active', 'created_at'])
                 ->orderBy('name')
                 ->get(),
         ]);
@@ -45,14 +45,22 @@ class UserController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', 'min:8'],
-            'role' => ['nullable', 'string', 'in:cashier,manager'],
+            'role' => ['nullable', 'string', 'in:cashier,manager,admin'],
         ]);
+
+        $requestedRole = $validated['role'] ?? 'cashier';
+
+        if ($requestedRole !== 'cashier' && !$user->isAdmin()) {
+            return response()->json([
+                'message' => 'Only admins can create manager or admin accounts.',
+            ], 403);
+        }
 
         $newUser = User::create([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
-            'role' => $validated['role'] ?? 'cashier',
+            'role' => $requestedRole,
         ]);
 
         return response()->json([
@@ -73,14 +81,91 @@ class UserController extends Controller
         }
 
         $validated = $request->validate([
-            'role' => ['required', 'string', 'in:cashier,manager'],
+            'role' => ['required', 'string', 'in:cashier,manager,admin'],
         ]);
+
+        if ($targetUser->isAdmin() && !$user->isAdmin()) {
+            return response()->json([
+                'message' => 'Only admins can change an admin\'s role.',
+            ], 403);
+        }
+
+        if ($validated['role'] !== 'cashier' && !$user->isAdmin()) {
+            return response()->json([
+                'message' => 'Only admins can promote a user to manager or admin.',
+            ], 403);
+        }
 
         $targetUser->role = $validated['role'];
         $targetUser->save();
 
         return response()->json([
             'data' => $targetUser->only(['id', 'name', 'email', 'role']),
+        ]);
+    }
+
+    public function deactivate(Request $request, User $targetUser): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        if (!$user->isManager()) {
+            return response()->json(['message' => 'Only managers can deactivate accounts.'], 403);
+        }
+
+        if ($targetUser->id === $user->id) {
+            return response()->json(['message' => 'You cannot deactivate your own account.'], 422);
+        }
+
+        if ($targetUser->isAdmin() && !$user->isAdmin()) {
+            return response()->json(['message' => 'Only admins can deactivate an admin account.'], 403);
+        }
+
+        if (!$targetUser->isActive()) {
+            return response()->json(['message' => 'This account is already deactivated.'], 422);
+        }
+
+        $targetUser->is_active = false;
+        $targetUser->deactivated_at = now();
+        $targetUser->save();
+
+        // Revoke all existing sessions immediately, not just future logins.
+        $targetUser->tokens()->delete();
+
+        return response()->json([
+            'data' => $targetUser->only(['id', 'name', 'email', 'role', 'is_active', 'deactivated_at']),
+        ]);
+    }
+
+    public function reactivate(Request $request, User $targetUser): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        if (!$user->isManager()) {
+            return response()->json(['message' => 'Only managers can reactivate accounts.'], 403);
+        }
+
+        if ($targetUser->isAdmin() && !$user->isAdmin()) {
+            return response()->json(['message' => 'Only admins can reactivate an admin account.'], 403);
+        }
+
+        if ($targetUser->isActive()) {
+            return response()->json(['message' => 'This account is already active.'], 422);
+        }
+
+        $targetUser->is_active = true;
+        $targetUser->deactivated_at = null;
+        $targetUser->save();
+
+        return response()->json([
+            'data' => $targetUser->only(['id', 'name', 'email', 'role', 'is_active']),
         ]);
     }
 }

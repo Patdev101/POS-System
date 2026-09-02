@@ -1,80 +1,83 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ config('app.name') }} - Point of Sale</title>
-    <link rel="stylesheet" href="/pos-assets/style.css">
+    <link rel="stylesheet" href="/pos-assets/style.css?v={{ filemtime(public_path('pos-assets/style.css')) }}">
 </head>
 
 <body class="pos-body">
 
+    <div id="page-loader" class="page-loader">
+        <div class="spinner"></div>
+        <p>Loading POS Dashboard...</p>
+    </div>
+
     <div id="app" hidden>
 
         <!-- TOP BAR -->
-        <header class="topbar">
+        <header class="pos-header">
             <div class="brand-area">
-                <div class="brand-mark">P</div>
-                <div>
-                    <div class="brand-name">{{ config('app.name') }}</div>
-                    <div class="brand-subtitle">Point of Sale</div>
-                </div>
+                <span class="header-eyebrow">CASHIER</span>
+                <strong class="header-title">POS Dashboard</strong>
             </div>
 
-            <div class="topbar-center">
-                <div class="location-pill">
+            <div class="header-center">
+                <div class="location-display">
                     <span class="status-dot"></span>
                     <span id="location-badge">Location</span>
                 </div>
             </div>
 
-            <div class="topbar-right">
-                <div class="cashier-info">
-                    <div class="cashier-avatar">C</div>
-                    <div>
-                        <div id="cashier-name" class="cashier-name">Cashier</div>
-                        <div id="register-status" class="register-status">Register: ...</div>
-                    </div>
-                </div>
-
-                <button id="close-register-btn" class="topbar-action" hidden>
-                    Close Register
-                </button>
-
-                <button id="logout-btn" class="topbar-action logout-action">
-                    Logout
-                </button>
+            <div class="header-actions">
+                <span id="register-status" class="register-status">Register: ...</span>
+                <a href="/pos/manager" id="manager-console-link" class="header-btn" hidden>Manager Console</a>
+                <span class="logged-in-badge">Logged in: <strong id="cashier-name">User</strong></span>
+                <button id="logout-btn" class="header-btn logout-btn">Logout</button>
             </div>
         </header>
 
         <!-- ERROR / NOTICE -->
         <div id="error-banner" class="error-banner" hidden></div>
 
+        <!-- STATS -->
+        <p id="stats-date-label" class="stats-date-label"></p>
+        <div class="stats-row">
+            <div class="stat-card">
+                <div class="stat-label">Completed Sales</div>
+                <div class="stat-value" id="stat-completed">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Sales</div>
+                <div class="stat-value stat-primary" id="stat-total">₱0.00</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Voided Sales</div>
+                <div class="stat-value stat-danger" id="stat-voided">0</div>
+            </div>
+        </div>
+
+        <!-- SESSION NOTICE -->
+        <div id="session-notice" class="session-notice" hidden></div>
+
         <!-- MAIN POS -->
         <main class="pos-workspace">
 
             <!-- PRODUCTS -->
-            <section class="catalog-panel">
+            <section class="catalog-section">
 
-                <div class="catalog-header">
-                    <div>
-                        <p class="eyebrow">PRODUCTS</p>
-                        <h1>Start a new sale</h1>
-                        <p class="catalog-description">
-                            Search for products or scan a barcode to add items.
-                        </p>
-                    </div>
-                </div>
+                <p class="section-eyebrow">Products</p>
 
-                <div class="search-box">
+                <div class="product-search">
                     <span class="search-icon">⌕</span>
                     <input
                         type="text"
                         id="search-input"
-                        placeholder="Search product, SKU, or barcode..."
+                        placeholder="Search SKU or name"
                         autocomplete="off"
                     >
-                    <span class="search-shortcut">Search</span>
+                    <button type="button" id="refresh-products-btn" class="refresh-link">Refresh</button>
                 </div>
 
                 <div id="products-grid" class="products-grid"></div>
@@ -82,29 +85,21 @@
             </section>
 
             <!-- CART -->
-            <aside class="checkout-panel">
+            <aside class="sale-panel">
 
-                <div class="checkout-header">
-                    <div>
-                        <p class="eyebrow">CURRENT SALE</p>
-                        <h2>Cart</h2>
-                    </div>
-
-                    <div class="cart-badge">
-                        <span id="cart-count">0</span>
-                        items
-                    </div>
+                <div class="sale-panel-header">
+                    <h2>Cart</h2>
+                    <span class="cart-count"><span id="cart-count">0</span> items</span>
                 </div>
 
                 <div id="cart-items" class="cart-items">
                     <div class="empty-cart">
                         <div class="empty-cart-icon">+</div>
-                        <strong>Your cart is empty</strong>
-                        <span>Add products from the catalog to begin.</span>
+                        <strong>Cart is empty</strong>
                     </div>
                 </div>
 
-                <div class="sale-summary">
+                <div class="sale-details">
 
                     <div class="summary-row">
                         <span>Subtotal</span>
@@ -116,197 +111,115 @@
                         <strong id="cart-discount">₱0.00</strong>
                     </div>
 
-                    <div class="summary-row tax-row">
-                        <label for="tax-rate-input">Tax</label>
-                        <div class="tax-input-wrap">
-                            <input
-                                type="number"
-                                id="tax-rate-input"
-                                value="0"
-                                min="0"
-                                max="100"
-                                step="0.01"
-                            >
-                            <span>%</span>
-                        </div>
-                    </div>
+                    <input type="hidden" id="tax-rate-input" value="0">
+                    <span id="cart-tax" hidden>₱0.00</span>
 
-                    <div class="summary-row">
-                        <span>Tax amount</span>
-                        <strong id="cart-tax">₱0.00</strong>
-                    </div>
-
-                    <div class="grand-total">
+                    <div class="sale-total">
                         <span>Total</span>
                         <strong id="cart-total">₱0.00</strong>
                     </div>
 
                 </div>
 
-                <div class="checkout-fields">
+                <div class="checkout-details">
 
-                    <div class="field-group">
-                        <label for="customer-name-input">Customer</label>
-                        <input
-                            type="text"
-                            id="customer-name-input"
-                            placeholder="Walk-in Customer"
-                        >
+                    <div class="two-col">
+                        <div>
+                            <label for="opening-cash-input">Opening cash</label>
+                            <input type="number" id="opening-cash-input" min="0" step="0.01" value="0">
+                        </div>
+                        <div>
+                            <label for="closing-cash-input">Closing cash</label>
+                            <input type="number" id="closing-cash-input" min="0" step="0.01" value="0" disabled>
+                        </div>
                     </div>
 
-                    <div class="field-group">
-                        <label for="payment-method-select">Payment method</label>
-                        <select id="payment-method-select">
-                            <option value="cash">Cash</option>
-                            <option value="card">Card</option>
-                            <option value="gcash">GCash</option>
-                        </select>
+                    <div id="session-summary" class="session-summary" hidden></div>
+
+                    <label for="customer-name-input">Customer</label>
+                    <input type="text" id="customer-name-input" placeholder="Walk-in Customer">
+
+                    <div class="two-col">
+                        <div>
+                            <label for="payment-method-select">Payment</label>
+                            <select id="payment-method-select">
+                                <option value="cash">Cash</option>
+                                <option value="card">Card</option>
+                                <option value="gcash">GCash</option>
+                            </select>
+                        </div>
+
+                        <div id="cash-fields">
+                            <label for="received-amount-input">Cash received</label>
+                            <input type="number" id="received-amount-input" min="0" step="0.01" placeholder="0.00">
+                        </div>
+
+                        <div id="reference-fields" hidden>
+                            <label for="payment-reference-input">Reference</label>
+                            <input type="text" id="payment-reference-input" placeholder="Reference number">
+                        </div>
+
+                        <div id="gcash-qr-wrap" class="gcash-qr-wrap" hidden>
+                            <img id="gcash-qr-img" class="gcash-qr-img" alt="GCash payment QR">
+                            <p class="gcash-qr-hint">Ask the customer to scan and pay, then enter the GCash reference number above.</p>
+                        </div>
                     </div>
 
-                    <div id="cash-fields" class="payment-fields">
-
-                        <div class="field-group">
-                            <label for="received-amount-input">Amount received</label>
-                            <input
-                                type="number"
-                                id="received-amount-input"
-                                min="0"
-                                step="0.01"
-                                placeholder="0.00"
-                            >
-                        </div>
-
-                        <div class="change-display">
-                            <span>Change</span>
-                            <strong id="change-amount">₱0.00</strong>
-                        </div>
-
+                    <div class="change-row">
+                        <span>Change</span>
+                        <strong id="change-amount">₱0.00</strong>
                     </div>
 
-                    <div id="reference-fields" hidden class="payment-fields">
+                    <div id="register-error" class="modal-error" hidden></div>
 
-                        <div class="field-group">
-                            <label for="payment-reference-input">Payment reference</label>
-                            <input
-                                type="text"
-                                id="payment-reference-input"
-                                placeholder="Reference number"
-                            >
-                        </div>
-
+                    <div class="register-actions">
+                        <button type="button" id="open-register-btn" class="secondary-btn">Open session</button>
+                        <button type="button" id="close-register-btn" class="secondary-btn danger">Close session</button>
                     </div>
 
                 </div>
 
                 <button id="checkout-btn" class="checkout-btn" disabled>
-                    <span>Complete Sale</span>
+                    <span>Checkout</span>
                     <span class="checkout-arrow">→</span>
                 </button>
 
             </aside>
 
         </main>
+
+        <!-- RECENT RECEIPTS -->
+        <section class="receipts-section">
+            <div class="section-heading-row">
+                <p class="section-eyebrow">Recent Receipts</p>
+            </div>
+
+            <div id="recent-receipts-list" class="receipts-list">
+                <div class="table-empty">Loading receipts...</div>
+            </div>
+        </section>
+
     </div>
 
-
-    <!-- OPEN REGISTER MODAL -->
-    <div id="open-register-modal" class="modal-overlay" hidden>
-        <div class="register-modal">
-
-            <div class="modal-icon open-icon">₱</div>
-
-            <div class="modal-heading">
-                <p class="eyebrow">REGISTER</p>
-                <h2>Open Register</h2>
-                <p>
-                    Enter the starting cash available in the register before
-                    beginning your shift.
-                </p>
+    <!-- TRANSACTION / RECEIPT MODAL -->
+    <div id="receipt-modal" class="modal-overlay" hidden>
+        <div class="receipt-modal">
+            <div class="receipt-modal-header">
+                <h2>Transaction Details</h2>
+                <button type="button" id="receipt-close-btn" class="modal-close-btn">✕</button>
             </div>
 
-            <div class="modal-field">
-                <label for="opening-cash-input">Opening cash</label>
-
-                <div class="money-input">
-                    <span>₱</span>
-                    <input
-                        type="number"
-                        id="opening-cash-input"
-                        min="0"
-                        step="0.01"
-                        value="0"
-                    >
-                </div>
-            </div>
-
-            <div id="open-register-error" class="modal-error" hidden></div>
-
-            <button id="open-register-btn" class="primary-modal-btn">
-                Open Register
-            </button>
-
-        </div>
-    </div>
-
-
-    <!-- CLOSE REGISTER MODAL -->
-    <div id="close-register-modal" class="modal-overlay" hidden>
-        <div class="register-modal">
-
-            <div class="modal-icon close-icon">✓</div>
-
-            <div class="modal-heading">
-                <p class="eyebrow">END OF SHIFT</p>
-                <h2>Close Register</h2>
-                <p>
-                    Count the cash currently in the register and confirm
-                    the amount below.
-                </p>
-            </div>
-
-            <div class="cash-reconciliation">
-
-                <div class="reconciliation-row">
-                    <span>Expected cash</span>
-                    <strong id="expected-cash-display">₱0.00</strong>
-                </div>
-
-                <div class="reconciliation-divider"></div>
-
-                <div class="modal-field">
-                    <label for="closing-cash-input">Actual cash counted</label>
-
-                    <div class="money-input">
-                        <span>₱</span>
-                        <input
-                            type="number"
-                            id="closing-cash-input"
-                            min="0"
-                            step="0.01"
-                            value="0"
-                        >
-                    </div>
-                </div>
-
-            </div>
-
-            <div id="close-register-error" class="modal-error" hidden></div>
+            <div id="receipt-content" class="receipt-content"></div>
 
             <div class="modal-actions">
-                <button id="close-register-cancel-btn" class="secondary-modal-btn">
-                    Cancel
-                </button>
-
-                <button id="close-register-confirm-btn" class="danger-modal-btn">
-                    Close Register
-                </button>
+                <button type="button" id="receipt-print-btn" class="secondary-btn">Print</button>
+                <button type="button" id="receipt-refund-btn" class="secondary-btn warning">Refund sale</button>
+                <button type="button" id="receipt-void-btn" class="secondary-btn danger">Void sale</button>
             </div>
-
         </div>
     </div>
 
-
-    <script src="/pos-assets/app.js"></script>
+    <script src="/pos-assets/app.js?v={{ filemtime(public_path('pos-assets/app.js')) }}"></script>
     <script>
         Pos.initPosPage();
     </script>

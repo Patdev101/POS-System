@@ -35,5 +35,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/users', [UserController::class, 'index']);
     Route::post('/users', [UserController::class, 'store']);
     Route::patch('/users/{targetUser}/role', [UserController::class, 'updateRole']);
+    Route::post('/users/{targetUser}/deactivate', [UserController::class, 'deactivate']);
+    Route::post('/users/{targetUser}/reactivate', [UserController::class, 'reactivate']);
 
 });

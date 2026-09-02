@@ -291,7 +291,7 @@ class PosCheckoutController extends Controller
                 ]);
 
                 return $sale;
-            });
+            }, 3);
         } catch (\Throwable $e) {
             foreach (array_reverse($removedInventory) as $inventoryItem) {
                 try {

@@ -10,8 +10,20 @@ use Illuminate\Http\Request;
 
 class SaleController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401);
+        }
+
+        $from = $request->query('from');
+        $to = $request->query('to');
+        $viewAll = $user->isManager() && $request->boolean('all');
+
         $sales = Sale::with([
             'user',
             'customer',
@@ -19,6 +31,9 @@ class SaleController extends Controller
             'items',
             'payments',
         ])
+            ->when(!$viewAll, fn ($query) => $query->where('user_id', $user->id))
+            ->when($from, fn ($query) => $query->whereDate('created_at', '>=', $from))
+            ->when($to, fn ($query) => $query->whereDate('created_at', '<=', $to))
             ->latest()
             ->get();
 
@@ -37,17 +52,24 @@ class SaleController extends Controller
             ], 401);
         }
 
+        $from = $request->query('from') ?: now()->startOfDay()->toDateString();
+        $to = $request->query('to') ?: now()->endOfDay()->toDateString();
+
         $viewAll = $user->isManager() && $request->boolean('all');
         $locationId = $request->integer('location_id') ?: null;
 
         $completedSales = Sale::query()
             ->when(!$viewAll, fn ($query) => $query->where('user_id', $user->id))
             ->when($locationId, fn ($query) => $query->where('location_id', $locationId))
+            ->whereDate('created_at', '>=', $from)
+            ->whereDate('created_at', '<=', $to)
             ->where('status', 'completed');
 
         $voidedSales = Sale::query()
             ->when(!$viewAll, fn ($query) => $query->where('user_id', $user->id))
             ->when($locationId, fn ($query) => $query->where('location_id', $locationId))
+            ->whereDate('created_at', '>=', $from)
+            ->whereDate('created_at', '<=', $to)
             ->where('status', 'voided');
 
         return response()->json([
@@ -55,6 +77,8 @@ class SaleController extends Controller
                 'total_sales' => (int) $completedSales->count(),
                 'total_amount' => round((float) $completedSales->sum('total'), 2),
                 'voided_sales' => (int) $voidedSales->count(),
+                'from' => $from,
+                'to' => $to,
             ],
         ], 200);
     }

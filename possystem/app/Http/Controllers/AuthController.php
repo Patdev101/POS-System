@@ -24,6 +24,12 @@ class AuthController extends Controller
             ], 401);
         }
 
+        if (!$user->isActive()) {
+            return response()->json([
+                'message' => 'This account has been deactivated. Contact a manager or admin.',
+            ], 403);
+        }
+
         $token = $user->createToken('pos-api')->plainTextToken;
 
         return response()->json([

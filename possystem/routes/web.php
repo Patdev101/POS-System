@@ -21,3 +21,7 @@ Route::get('/pos/login', function () {
 Route::get('/pos', function () {
     return view('pos.index');
 });
+
+Route::get('/pos/manager', function () {
+    return view('pos.manager');
+});
