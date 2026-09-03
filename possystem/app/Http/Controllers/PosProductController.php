@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\InventoryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use RuntimeException;
 
 class PosProductController extends Controller
 {
@@ -12,7 +13,12 @@ class PosProductController extends Controller
     {
         $search = trim((string) $request->query('search', ''));
         $locationId = (int) config('pos.location_id');
-        $products = $inventoryService->getProducts();
+
+        try {
+            $products = $inventoryService->getProducts();
+        } catch (RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 503);
+        }
 
         $filteredProducts = collect($products)
             ->when($search !== '', function ($collection) use ($search) {
@@ -51,7 +57,13 @@ class PosProductController extends Controller
         $code = strtolower(trim($validated['code']));
         $locationId = (int) config('pos.location_id');
 
-        $product = collect($inventoryService->getProducts())
+        try {
+            $products = $inventoryService->getProducts();
+        } catch (RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 503);
+        }
+
+        $product = collect($products)
             ->first(function (array $product) use ($code) {
                 $sku = strtolower((string) ($product['sku'] ?? ''));
                 $barcode = strtolower((string) ($product['barcode'] ?? ''));
@@ -72,9 +84,15 @@ class PosProductController extends Controller
 
     public function locations(InventoryService $inventoryService): JsonResponse
     {
+        try {
+            $locations = $inventoryService->getLocations();
+        } catch (RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 503);
+        }
+
         return response()->json([
             'configured_location_id' => (int) config('pos.location_id'),
-            'data' => collect($inventoryService->getLocations())
+            'data' => collect($locations)
                 ->map(fn (array $location) => [
                     'id' => (int) ($location['id'] ?? 0),
                     'name' => $location['name'] ?? null,

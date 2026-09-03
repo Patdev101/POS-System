@@ -18,6 +18,7 @@ class Sale extends Model
     'idempotency_key',
     'subtotal',
     'discount',
+    'discount_reason',
     'tax',
     'total',
     'status',

@@ -153,6 +153,7 @@ class SaleController extends Controller
                 'status' => $sale->status,
                 'subtotal' => round((float) $sale->subtotal, 2),
                 'discount' => round((float) $sale->discount, 2),
+                'discount_reason' => $sale->discount_reason,
                 'tax' => round((float) $sale->tax, 2),
                 'total' => round((float) $sale->total, 2),
                 'created_at' => $sale->created_at,

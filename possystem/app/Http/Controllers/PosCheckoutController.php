@@ -24,13 +24,13 @@ class PosCheckoutController extends Controller
             'received_amount' => ['nullable', 'numeric', 'min:0'],
             'payment_reference' => ['nullable', 'string', 'max:255'],
             'idempotency_key' => ['nullable', 'string', 'max:255'],
-            'tax_rate' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'discount' => ['nullable', 'numeric', 'min:0'],
+            'discount_reason' => ['nullable', 'string', 'max:255', 'required_with:discount'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.product_id' => ['required', 'integer', 'min:1'],
             'items.*.quantity' => ['required', 'numeric', 'min:0.0001'],
             'items.*.product_unit_id' => ['required', 'integer', 'min:1'],
             'items.*.location_id' => ['required', 'integer', 'min:1'],
-            'items.*.discount' => ['nullable', 'numeric', 'min:0'],
         ]);
 
         $idempotencyKey = trim((string) ($validated['idempotency_key'] ?? ''));
@@ -90,8 +90,10 @@ class PosCheckoutController extends Controller
 
         $preparedItems = [];
         $subtotal = 0;
-        $discountTotal = 0;
-        $taxRate = (float) ($validated['tax_rate'] ?? 0);
+
+        // Tax rate is a fixed store-wide business setting, never a client-supplied
+        // value — a cashier (or a tampered request) can never change or zero it out.
+        $taxRate = (float) config('pos.tax_rate', 0);
 
         foreach ($validated['items'] as $item) {
             $productId = (int) $item['product_id'];
@@ -169,11 +171,9 @@ class PosCheckoutController extends Controller
                 ], 422);
             }
 
-            $discount = (float) ($item['discount'] ?? 0);
             $lineSubtotal = round($unitPrice * $quantity, 2);
 
             $subtotal += $lineSubtotal;
-            $discountTotal += $discount;
 
             $preparedItems[] = [
                 'product_id' => $productId,
@@ -181,13 +181,26 @@ class PosCheckoutController extends Controller
                 'sku' => $product['sku'] ?? null,
                 'quantity' => $quantity,
                 'unit_price' => $unitPrice,
-                'discount' => $discount,
+                'discount' => 0,
                 'subtotal' => $lineSubtotal,
                 'product_unit_id' => $productUnitId,
                 'location_id' => $locationId,
                 'conversion_factor' => $conversionFactor,
                 'base_quantity' => $requestedBaseQuantity,
             ];
+        }
+
+        // Discount is a single whole-sale amount with a mandatory reason (like
+        // void/refund reasons), not a per-item field a cashier can quietly tweak.
+        $discountTotal = (float) ($validated['discount'] ?? 0);
+        $discountReason = $discountTotal > 0 ? ($validated['discount_reason'] ?? null) : null;
+
+        if ($discountTotal > $subtotal) {
+            return response()->json([
+                'message' => 'Discount cannot exceed the sale subtotal.',
+                'subtotal' => round($subtotal, 2),
+                'discount' => round($discountTotal, 2),
+            ], 422);
         }
 
         $taxableAmount = round($subtotal - $discountTotal, 2);
@@ -250,7 +263,7 @@ class PosCheckoutController extends Controller
                 ];
             }
 
-            $sale = DB::transaction(function () use ($user, $customer, $cashSession, $preparedItems, $subtotal, $discountTotal, $taxAmount, $total, $validated, $idempotencyKey, $change) {
+            $sale = DB::transaction(function () use ($user, $customer, $cashSession, $preparedItems, $subtotal, $discountTotal, $discountReason, $taxAmount, $total, $validated, $idempotencyKey, $change) {
                 $sale = Sale::query()->create([
                     'user_id' => $user->id,
                     'customer_id' => $customer?->id,
@@ -260,6 +273,7 @@ class PosCheckoutController extends Controller
                     'idempotency_key' => $idempotencyKey !== '' ? $idempotencyKey : null,
                     'subtotal' => $subtotal,
                     'discount' => $discountTotal,
+                    'discount_reason' => $discountReason,
                     'tax' => $taxAmount,
                     'total' => $total,
                     'status' => 'completed',
@@ -346,6 +360,7 @@ class PosCheckoutController extends Controller
             'subtotal' => (float) $sale->subtotal,
             'tax_total' => (float) $sale->tax,
             'discount_total' => (float) $sale->discount,
+            'discount_reason' => $sale->discount_reason,
             'total' => (float) $sale->total,
             'status' => $sale->status,
             'created_at' => $sale->created_at,
@@ -371,6 +386,7 @@ class PosCheckoutController extends Controller
             'subtotal' => (float) $sale->subtotal,
             'tax_total' => (float) $sale->tax,
             'discount_total' => (float) $sale->discount,
+            'discount_reason' => $sale->discount_reason,
             'total' => (float) $sale->total,
             'status' => $sale->status,
             'created_at' => $sale->created_at,

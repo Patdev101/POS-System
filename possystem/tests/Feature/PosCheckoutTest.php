@@ -764,16 +764,19 @@ class PosCheckoutTest extends TestCase
             'opening_cash' => 500,
         ])->assertCreated();
 
+        // Tax rate is a fixed store setting now, never client-supplied.
+        config(['pos.tax_rate' => 12]);
+
         $checkout = $this->postJson('/api/pos/checkout', [
             'payment_method' => 'cash',
             'received_amount' => 110,
-            'tax_rate' => 12,
+            'discount' => 10,
+            'discount_reason' => 'Loyalty discount',
             'items' => [[
                 'product_id' => 101,
                 'quantity' => 1,
                 'location_id' => 1,
                 'product_unit_id' => 10,
-                'discount' => 10,
             ]],
         ]);
 

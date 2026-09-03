@@ -28,8 +28,9 @@ class InventoryService
 
     public function getProducts(): array
     {
-        $response = $this->client()
-            ->get($this->baseUrl . '/api/products');
+        $response = $this->safeRequest(function () {
+            return $this->client()->get($this->baseUrl . '/api/products');
+        });
 
         if ($response->failed()) {
             throw new RuntimeException(
@@ -55,8 +56,9 @@ class InventoryService
 
     public function getLocations(): array
     {
-        $response = $this->client()
-            ->get($this->baseUrl . '/api/locations');
+        $response = $this->safeRequest(function () {
+            return $this->client()->get($this->baseUrl . '/api/locations');
+        });
 
         if ($response->failed()) {
             throw new RuntimeException(
@@ -75,8 +77,8 @@ class InventoryService
         ?string $reference = null,
         ?string $notes = null
     ): array {
-        $response = $this->client()
-            ->post($this->baseUrl . '/api/inventory/out', [
+        $response = $this->safeRequest(function () use ($productId, $locationId, $productUnitId, $quantity, $reference, $notes) {
+            return $this->client()->post($this->baseUrl . '/api/inventory/out', [
                 'product_id' => $productId,
                 'location_id' => $locationId,
                 'product_unit_id' => $productUnitId,
@@ -84,6 +86,7 @@ class InventoryService
                 'reference' => $reference,
                 'notes' => $notes,
             ]);
+        });
 
         if ($response->failed()) {
             throw new RuntimeException(
@@ -103,8 +106,8 @@ class InventoryService
         ?string $reference = null,
         ?string $notes = null
     ): array {
-        $response = $this->client()
-            ->post($this->baseUrl . '/api/inventory/in', [
+        $response = $this->safeRequest(function () use ($productId, $locationId, $productUnitId, $quantity, $reference, $notes) {
+            return $this->client()->post($this->baseUrl . '/api/inventory/in', [
                 'product_id' => $productId,
                 'location_id' => $locationId,
                 'product_unit_id' => $productUnitId,
@@ -112,6 +115,7 @@ class InventoryService
                 'reference' => $reference,
                 'notes' => $notes,
             ]);
+        });
 
         if ($response->failed()) {
             throw new RuntimeException(
@@ -121,5 +125,23 @@ class InventoryService
         }
 
         return $response->json();
+    }
+
+    /**
+     * Run an HTTP call and convert a low-level connection failure (the
+     * Inventory service being down/unreachable) into the same clean
+     * RuntimeException used for an HTTP-level failure, instead of letting a
+     * raw Guzzle ConnectionException (with a full stack trace) bubble up to
+     * the client.
+     */
+    private function safeRequest(callable $request): \Illuminate\Http\Client\Response
+    {
+        try {
+            return $request();
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            throw new RuntimeException(
+                'Unable to reach the inventory service. It may be offline.'
+            );
+        }
     }
 }

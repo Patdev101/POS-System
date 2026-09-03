@@ -48,7 +48,7 @@ Cashier console: `http://127.0.0.1:8002/pos` (port may differ — check which po
 - **No CSV/Excel export** — Sales Reports and Product Analytics are screen-only; nothing an accountant could pull into a spreadsheet without manually retyping numbers.
 - Everything else already tracked in §10 (split payments, thermal printer, cash drops, offline mode, cashier-location authorization, server-side logout/token revocation, profit/COGS reporting blocked on a missing cost field).
 
--in the cashier performance add also monthly status performance so it will be only counting the month not the whole progress she made during her/his work on the company and payment method in the manager is it necessary if you can suggestion what to replace or just remove it.
+
 
 ---
 

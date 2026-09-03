@@ -270,11 +270,6 @@
         const user = getUser();
         document.getElementById('cashier-name').textContent = user ? user.name : '';
 
-        if (user.role === 'admin') {
-            document.getElementById('new-user-role-manager-option').hidden = false;
-            document.getElementById('new-user-role-admin-option').hidden = false;
-        }
-
         document.getElementById('logout-btn').addEventListener('click', function () {
             clearSession();
             window.location.href = '/pos/login';
@@ -291,8 +286,6 @@
             loadSales(todayDateString());
         });
 
-        document.getElementById('create-user-form').addEventListener('submit', createUser);
-
         document.getElementById('analytics-month-input').addEventListener('change', function () {
             loadProductAnalytics(document.getElementById('analytics-month-input').value || currentMonthString());
         });
@@ -300,6 +293,15 @@
         document.getElementById('analytics-this-month-btn').addEventListener('click', function () {
             document.getElementById('analytics-month-input').value = currentMonthString();
             loadProductAnalytics(currentMonthString());
+        });
+
+        document.querySelectorAll('.period-toggle-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                document.querySelectorAll('.period-toggle-btn').forEach(function (b) { b.classList.remove('active'); });
+                btn.classList.add('active');
+                state.cashierPerfScope = btn.getAttribute('data-scope');
+                renderCashierPerformanceForScope();
+            });
         });
 
         bindReceiptModalListeners();
@@ -325,16 +327,51 @@
         document.getElementById('analytics-month-input').value = currentMonthString();
 
         await refreshReports();
-        await loadUsers();
         await loadProductAnalytics(currentMonthString());
 
         document.getElementById('page-loader').hidden = true;
         document.getElementById('app').hidden = false;
     }
 
+    /* ---------------- Manage Users page ---------------- */
+
+    function initUsersPage() {
+        if (!getToken()) {
+            window.location.href = '/pos/login';
+            return;
+        }
+
+        if (!isManagerRole()) {
+            window.location.href = '/pos';
+            return;
+        }
+
+        const user = getUser();
+        document.getElementById('cashier-name').textContent = user ? user.name : '';
+
+        if (user.role === 'admin') {
+            document.getElementById('new-user-role-manager-option').hidden = false;
+            document.getElementById('new-user-role-admin-option').hidden = false;
+        }
+
+        document.getElementById('logout-btn').addEventListener('click', function () {
+            clearSession();
+            window.location.href = '/pos/login';
+        });
+
+        document.getElementById('create-user-form').addEventListener('submit', createUser);
+
+        loadUsers().then(function () {
+            document.getElementById('page-loader').hidden = true;
+            document.getElementById('app').hidden = false;
+        });
+    }
+
     /* ---------------- Sales reports / receipts ---------------- */
 
     state.sales = [];
+    state.monthlySales = [];
+    state.cashierPerfScope = 'day';
     state.activeSaleId = null;
 
     function isManagerRole() {
@@ -356,7 +393,7 @@
             state.users = response.data || [];
             renderUsersTable();
         } catch (err) {
-            tbody.innerHTML = '<tr><td colspan="5" class="table-empty">Unable to load users.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="table-empty">Unable to load users.</td></tr>';
         }
     }
 
@@ -368,7 +405,7 @@
         const actorIsAdmin = !!(currentUser && currentUser.role === 'admin');
 
         if (state.users.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="table-empty">No users found.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="table-empty">No users found.</td></tr>';
             return;
         }
 
@@ -405,6 +442,7 @@
             row.innerHTML =
                 '<td>' + escapeHtml(targetUser.name) + '</td>' +
                 '<td>' + escapeHtml(targetUser.email) + '</td>' +
+                '<td class="table-empty" style="padding:0;">&mdash;</td>' +
                 '<td>' + roleControl + '</td>' +
                 '<td>' + statusBadgeHtml + '</td>' +
                 '<td>' + actionsHtml + '</td>';
@@ -563,36 +601,53 @@
 
         const range = monthDateRange(monthStr);
 
+        // Sales data and the live product catalog are fetched independently —
+        // the catalog call depends on the Inventory service being reachable,
+        // and its failure must not take down sales-based analytics (Top Sellers,
+        // Monthly Cashier Performance) that don't need it at all.
+        let sales = [];
+        let salesLoaded = false;
+
         try {
-            const [salesResponse, productsResponse] = await Promise.all([
-                apiFetch('/sales?from=' + range.from + '&to=' + range.to + '&all=1'),
-                apiFetch('/pos/products?search='),
-            ]);
+            const salesResponse = await apiFetch('/sales?from=' + range.from + '&to=' + range.to + '&all=1');
+            sales = salesResponse.data || [];
+            salesLoaded = true;
+        } catch (err) {
+            topList.innerHTML = '<div class="table-empty">Unable to load sales data.</div>';
+        }
 
-            const sold = {};
+        const sold = {};
 
-            (salesResponse.data || []).forEach(function (sale) {
-                if (sale.status !== 'completed') {
-                    return;
+        sales.forEach(function (sale) {
+            if (sale.status !== 'completed') {
+                return;
+            }
+
+            (sale.items || []).forEach(function (item) {
+                const key = item.product_id || item.product_name;
+
+                if (!sold[key]) {
+                    sold[key] = { name: item.product_name, quantity: 0, revenue: 0 };
                 }
 
-                (sale.items || []).forEach(function (item) {
-                    const key = item.product_id || item.product_name;
-
-                    if (!sold[key]) {
-                        sold[key] = { name: item.product_name, quantity: 0, revenue: 0 };
-                    }
-
-                    sold[key].quantity += Number(item.quantity || 0);
-                    sold[key].revenue += Number(item.subtotal || 0);
-                });
+                sold[key].quantity += Number(item.quantity || 0);
+                sold[key].revenue += Number(item.subtotal || 0);
             });
+        });
 
+        if (salesLoaded) {
             renderTopProducts(sold);
+            state.monthlySales = sales;
+            if (state.cashierPerfScope === 'month') {
+                renderCashierPerformanceForScope();
+            }
+        }
+
+        try {
+            const productsResponse = await apiFetch('/pos/products?search=');
             renderSlowProducts(sold, productsResponse.data || []);
         } catch (err) {
-            topList.innerHTML = '<div class="table-empty">Unable to load analytics.</div>';
-            slowList.innerHTML = '<div class="table-empty">Unable to load analytics.</div>';
+            slowList.innerHTML = '<div class="table-empty">Unable to load the product catalog (is the Inventory service running?).</div>';
         }
     }
 
@@ -669,18 +724,10 @@
         }
     }
 
-    function renderCashierBreakdown() {
-        const tbody = document.getElementById('cashier-breakdown-body');
-        tbody.innerHTML = '';
-
-        if (state.sales.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="table-empty">No sales for this date.</td></tr>';
-            return;
-        }
-
+    function computeCashierBreakdown(salesArray) {
         const byCashier = {};
 
-        state.sales.forEach(function (sale) {
+        salesArray.forEach(function (sale) {
             const name = sale.user ? sale.user.name : 'Unknown';
 
             if (!byCashier[name]) {
@@ -700,17 +747,60 @@
             ? activeCashiers.reduce(function (sum, r) { return sum + r.total; }, 0) / activeCashiers.length
             : 0;
 
-        Object.keys(byCashier).sort().forEach(function (name) {
-            const row = byCashier[name];
+        return { byCashier: byCashier, averageTotal: averageTotal };
+    }
+
+    function renderCashierBreakdownInto(tbodyId, salesArray, emptyMessage) {
+        const tbody = document.getElementById(tbodyId);
+
+        if (!tbody) {
+            return;
+        }
+
+        tbody.innerHTML = '';
+
+        if (salesArray.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="table-empty">' + escapeHtml(emptyMessage) + '</td></tr>';
+            return;
+        }
+
+        const computed = computeCashierBreakdown(salesArray);
+
+        Object.keys(computed.byCashier).sort().forEach(function (name) {
+            const row = computed.byCashier[name];
             const tr = document.createElement('tr');
             tr.innerHTML =
                 '<td>' + escapeHtml(name) + '</td>' +
                 '<td>' + row.completed + '</td>' +
                 '<td>' + money(row.total) + '</td>' +
                 '<td>' + row.voided + '</td>' +
-                '<td>' + performanceBadge(row, averageTotal) + '</td>';
+                '<td>' + performanceBadge(row, computed.averageTotal) + '</td>';
             tbody.appendChild(tr);
         });
+    }
+
+    function renderCashierBreakdown() {
+        if (state.cashierPerfScope === 'day') {
+            renderCashierPerformanceForScope();
+        }
+    }
+
+    function renderCashierPerformanceForScope() {
+        const label = document.getElementById('cashier-perf-range-label');
+
+        if (!label) {
+            return;
+        }
+
+        if (state.cashierPerfScope === 'month') {
+            const monthStr = document.getElementById('analytics-month-input').value || currentMonthString();
+            label.textContent = 'Showing ' + monthLabel(monthStr);
+            renderCashierBreakdownInto('cashier-breakdown-body', state.monthlySales || [], 'No sales this month.');
+        } else {
+            const dateStr = getSelectedReportDate();
+            label.textContent = dateStr === todayDateString() ? 'Showing today (' + dateStr + ')' : 'Showing ' + dateStr;
+            renderCashierBreakdownInto('cashier-breakdown-body', state.sales, 'No sales for this date.');
+        }
     }
 
     function performanceBadge(row, averageTotal) {
@@ -744,40 +834,52 @@
     }
 
     function renderPaymentBreakdown() {
-        const tbody = document.getElementById('payment-breakdown-body');
-        tbody.innerHTML = '';
+        const wrap = document.getElementById('payment-breakdown-tiles');
+
+        if (!wrap) {
+            return;
+        }
+
+        wrap.innerHTML = '';
 
         const completedSales = state.sales.filter(function (s) { return s.status === 'completed'; });
 
         if (completedSales.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="3" class="table-empty">No completed sales for this date.</td></tr>';
+            wrap.innerHTML = '<div class="table-empty">No completed sales for this date.</div>';
             return;
         }
 
         const byMethod = {};
+        let grandTotal = 0;
 
         completedSales.forEach(function (sale) {
             (sale.payments || []).forEach(function (payment) {
                 const method = payment.method || 'cash';
+                const amount = Number(payment.amount || 0);
 
                 if (!byMethod[method]) {
                     byMethod[method] = { count: 0, total: 0 };
                 }
 
                 byMethod[method].count += 1;
-                byMethod[method].total += Number(payment.amount || 0);
+                byMethod[method].total += amount;
+                grandTotal += amount;
             });
         });
 
-        Object.keys(byMethod).sort().forEach(function (method) {
+        wrap.innerHTML = Object.keys(byMethod).sort().map(function (method) {
             const row = byMethod[method];
-            const tr = document.createElement('tr');
-            tr.innerHTML =
-                '<td>' + escapeHtml(method.toUpperCase()) + '</td>' +
-                '<td>' + row.count + '</td>' +
-                '<td>' + money(row.total) + '</td>';
-            tbody.appendChild(tr);
-        });
+            const pct = grandTotal > 0 ? Math.round((row.total / grandTotal) * 100) : 0;
+
+            return (
+                '<div class="payment-tile">' +
+                '<div class="payment-tile-method">' + escapeHtml(method.toUpperCase()) + '</div>' +
+                '<div class="payment-tile-amount">' + money(row.total) + '</div>' +
+                '<div class="payment-tile-meta">' + row.count + ' txn' + (row.count === 1 ? '' : 's') + ' &middot; ' + pct + '% of today</div>' +
+                '<div class="analytics-bar-track"><div class="analytics-bar-fill" style="width:' + Math.max(4, pct) + '%"></div></div>' +
+                '</div>'
+            );
+        }).join('');
     }
 
     async function loadRecentReceipts() {
@@ -1236,7 +1338,7 @@
         grid.innerHTML = '';
 
         const user = getUser();
-        const isManager = !!(user && user.role === 'manager');
+        const isManager = isManagerRole();
 
         state.products.forEach(function (product) {
             const card = document.createElement('div');
@@ -1587,6 +1689,7 @@
         initLoginPage: initLoginPage,
         initPosPage: initPosPage,
         initManagerPage: initManagerPage,
+        initUsersPage: initUsersPage,
     };
 })();
 
