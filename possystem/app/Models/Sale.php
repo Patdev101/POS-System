@@ -19,6 +19,8 @@ class Sale extends Model
     'subtotal',
     'discount',
     'discount_reason',
+    'discount_type',
+    'discount_id_number',
     'tax',
     'total',
     'status',

@@ -273,4 +273,194 @@ class UserManagementTest extends TestCase
 
         $this->postJson("/api/users/{$admin->id}/deactivate")->assertStatus(403);
     }
+
+    public function test_cashier_cannot_edit_another_users_account(): void
+    {
+        $cashier = User::factory()->create([
+            'email' => 'cashier-no-edit@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        $otherCashier = User::factory()->create([
+            'email' => 'other-cashier-target@example.com',
+        ]);
+
+        $this->loginAs($cashier);
+
+        $this->putJson("/api/users/{$otherCashier->id}", [
+            'name' => 'Hijacked',
+            'email' => 'hijacked@example.com',
+        ])->assertStatus(403);
+
+        $this->assertNotSame('hijacked@example.com', $otherCashier->fresh()->email);
+    }
+
+    public function test_admin_can_edit_another_users_email(): void
+    {
+        $admin = User::factory()->create([
+            'email' => 'admin-edit@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'admin',
+        ]);
+
+        $cashier = User::factory()->create([
+            'email' => 'cashier-to-edit@example.com',
+            'name' => 'Original Name',
+        ]);
+
+        $this->loginAs($admin);
+
+        $this->putJson("/api/users/{$cashier->id}", [
+            'name' => 'Original Name',
+            'email' => 'updated-by-admin@example.com',
+        ])->assertOk();
+
+        $this->assertSame('updated-by-admin@example.com', $cashier->fresh()->email);
+    }
+
+    public function test_admin_can_edit_another_admins_account(): void
+    {
+        // Admins have full user-management access, including over other
+        // admins — the only restriction is on their OWN account.
+        $admin = User::factory()->create([
+            'email' => 'admin-edit-2@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'admin',
+        ]);
+
+        $otherAdmin = User::factory()->create([
+            'email' => 'other-admin@example.com',
+            'name' => 'Other Admin',
+            'role' => 'admin',
+        ]);
+
+        $this->loginAs($admin);
+
+        $this->putJson("/api/users/{$otherAdmin->id}", [
+            'name' => 'Other Admin',
+            'email' => 'other-admin-updated@example.com',
+        ])->assertOk();
+
+        $this->assertSame('other-admin-updated@example.com', $otherAdmin->fresh()->email);
+    }
+
+    public function test_user_cannot_edit_their_own_account_through_the_admin_endpoint(): void
+    {
+        $admin = User::factory()->create([
+            'email' => 'admin-self-edit@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'admin',
+        ]);
+
+        $this->loginAs($admin);
+
+        $this->putJson("/api/users/{$admin->id}", [
+            'name' => $admin->name,
+            'email' => 'sneaky-self-change@example.com',
+        ])->assertStatus(422);
+
+        $this->assertNotSame('sneaky-self-change@example.com', $admin->fresh()->email);
+    }
+
+    public function test_duplicate_email_is_rejected_on_admin_edit(): void
+    {
+        $admin = User::factory()->create([
+            'email' => 'admin-dup-check@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'admin',
+        ]);
+
+        $existing = User::factory()->create(['email' => 'already-taken@example.com']);
+        $target = User::factory()->create(['email' => 'edit-target@example.com']);
+
+        $this->loginAs($admin);
+
+        $this->putJson("/api/users/{$target->id}", [
+            'name' => $target->name,
+            'email' => $existing->email,
+        ])->assertStatus(422);
+    }
+
+    public function test_admin_can_reset_another_users_password(): void
+    {
+        $admin = User::factory()->create([
+            'email' => 'admin-reset@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'admin',
+        ]);
+
+        $cashier = User::factory()->create([
+            'email' => 'cashier-to-reset@example.com',
+            'password' => Hash::make('old-password'),
+        ]);
+
+        $this->loginAs($admin);
+
+        $this->postJson("/api/users/{$cashier->id}/reset-password", [
+            'password' => 'admin-set-password-123',
+            'password_confirmation' => 'admin-set-password-123',
+        ])->assertOk();
+
+        $this->assertTrue(Hash::check('admin-set-password-123', $cashier->fresh()->password));
+    }
+
+    public function test_admin_reset_with_require_password_change_forces_change_on_next_login(): void
+    {
+        $admin = User::factory()->create([
+            'email' => 'admin-reset-force@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'admin',
+        ]);
+
+        $cashier = User::factory()->create([
+            'email' => 'cashier-force-reset@example.com',
+        ]);
+
+        $this->loginAs($admin);
+
+        $this->postJson("/api/users/{$cashier->id}/reset-password", [
+            'password' => 'admin-set-password-123',
+            'password_confirmation' => 'admin-set-password-123',
+            'require_password_change' => true,
+        ])->assertOk();
+
+        $this->assertTrue($cashier->fresh()->must_change_password);
+    }
+
+    public function test_manager_cannot_reset_an_admins_password(): void
+    {
+        $manager = User::factory()->create([
+            'email' => 'manager-no-admin-reset@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'manager',
+        ]);
+
+        $admin = User::factory()->create([
+            'email' => 'admin-protected@example.com',
+            'role' => 'admin',
+        ]);
+
+        $this->loginAs($manager);
+
+        $this->postJson("/api/users/{$admin->id}/reset-password", [
+            'password' => 'sneaky-password-123',
+            'password_confirmation' => 'sneaky-password-123',
+        ])->assertStatus(403);
+    }
+
+    public function test_user_cannot_reset_their_own_password_through_the_admin_endpoint(): void
+    {
+        $admin = User::factory()->create([
+            'email' => 'admin-self-reset@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'admin',
+        ]);
+
+        $this->loginAs($admin);
+
+        $this->postJson("/api/users/{$admin->id}/reset-password", [
+            'password' => 'sneaky-password-123',
+            'password_confirmation' => 'sneaky-password-123',
+        ])->assertStatus(422);
+    }
 }

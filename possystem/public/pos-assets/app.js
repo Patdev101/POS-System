@@ -24,6 +24,23 @@
         localStorage.removeItem(USER_KEY);
     }
 
+    /*
+     * True (and redirects) if this user must change their password before
+     * doing anything else. The server enforces this independently on every
+     * API call (see EnsureNoForcedPasswordChange) — this is just so the
+     * page doesn't even try to render the normal UI first.
+     */
+    function redirectIfMustChangePassword() {
+        const user = getUser();
+
+        if (user && user.must_change_password) {
+            window.location.href = '/pos/account';
+            return true;
+        }
+
+        return false;
+    }
+
     async function apiFetch(path, options) {
         options = options || {};
         const token = getToken();
@@ -42,6 +59,11 @@
             clearSession();
             window.location.href = '/pos/login';
             throw new Error('Unauthenticated');
+        }
+
+        if (response.status === 423 && !window.location.pathname.startsWith('/pos/account')) {
+            window.location.href = '/pos/account';
+            throw new Error('Password change required');
         }
 
         const data = await response.json().catch(function () { return {}; });
@@ -128,7 +150,10 @@
                 }
 
                 setSession(data.token, data.user);
-                window.location.href = '/pos';
+
+                window.location.href = (data.user && data.user.must_change_password)
+                    ? '/pos/account'
+                    : '/pos';
             } catch (err) {
                 errorBanner.textContent = 'Unable to reach the server. Please try again.';
                 errorBanner.hidden = false;
@@ -150,6 +175,10 @@
     function initPosPage() {
         if (!getToken()) {
             window.location.href = '/pos/login';
+            return;
+        }
+
+        if (redirectIfMustChangePassword()) {
             return;
         }
 
@@ -194,6 +223,27 @@
         document.getElementById('received-amount-input').addEventListener('input', renderCartTotals);
         document.getElementById('tax-rate-input').addEventListener('input', renderCartTotals);
         document.getElementById('checkout-btn').addEventListener('click', checkout);
+
+        document.getElementById('customer-name-input').addEventListener(
+            'input',
+            debounce(handleCustomerNameInput, 250)
+        );
+
+        document.getElementById('discount-toggle-btn').addEventListener('click', function () {
+            document.getElementById('discount-panel').hidden = false;
+            document.getElementById('discount-toggle-btn').hidden = true;
+        });
+
+        document.getElementById('discount-remove-btn').addEventListener('click', function () {
+            document.getElementById('discount-type-select').value = '';
+            document.getElementById('discount-id-input').value = '';
+            document.getElementById('discount-panel').hidden = true;
+            document.getElementById('discount-toggle-btn').hidden = false;
+            renderCartTotals();
+        });
+
+        document.getElementById('discount-type-select').addEventListener('change', renderCartTotals);
+        document.getElementById('discount-id-input').addEventListener('input', renderCartTotals);
 
         document.getElementById('open-register-btn').addEventListener('click', openRegister);
         document.getElementById('close-register-btn').addEventListener('click', closeRegister);
@@ -252,6 +302,47 @@
 
         document.getElementById('page-loader').hidden = true;
         document.getElementById('app').hidden = false;
+
+        startProductAutoRefresh();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Auto-refresh product prices/stock
+    |--------------------------------------------------------------------------
+    |
+    | Prices (and stock) can change in the Inventory app at any time, so the
+    | POS periodically re-fetches the catalog instead of requiring a manual
+    | page reload. Cart lines already added keep their price — this only
+    | keeps the browsable catalog current.
+    */
+
+    let productRefreshTimer = null;
+    let productRefreshInFlight = false;
+
+    function startProductAutoRefresh() {
+        if (productRefreshTimer) {
+            return;
+        }
+
+        productRefreshTimer = window.setInterval(function () {
+            if (productRefreshInFlight || document.hidden) {
+                return;
+            }
+
+            productRefreshInFlight = true;
+
+            loadProducts(document.getElementById('search-input').value)
+                .finally(function () {
+                    productRefreshInFlight = false;
+                });
+        }, 15000);
+
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) {
+                loadProducts(document.getElementById('search-input').value);
+            }
+        });
     }
 
     /* ---------------- Manager console page ---------------- */
@@ -259,6 +350,10 @@
     function initManagerPage() {
         if (!getToken()) {
             window.location.href = '/pos/login';
+            return;
+        }
+
+        if (redirectIfMustChangePassword()) {
             return;
         }
 
@@ -341,6 +436,10 @@
             return;
         }
 
+        if (redirectIfMustChangePassword()) {
+            return;
+        }
+
         if (!isManagerRole()) {
             window.location.href = '/pos';
             return;
@@ -360,6 +459,12 @@
         });
 
         document.getElementById('create-user-form').addEventListener('submit', createUser);
+
+        document.getElementById('edit-user-form').addEventListener('submit', submitEditUser);
+        document.getElementById('edit-user-cancel-btn').addEventListener('click', closeEditUserModal);
+
+        document.getElementById('reset-password-form').addEventListener('submit', submitResetPassword);
+        document.getElementById('reset-password-cancel-btn').addEventListener('click', closeResetPasswordModal);
 
         loadUsers().then(function () {
             document.getElementById('page-loader').hidden = true;
@@ -429,20 +534,27 @@
                 ? '<span class="role-badge status-completed">Active</span>'
                 : '<span class="role-badge status-voided">Inactive</span>';
 
-            let actionsHtml = '<span class="table-empty" style="padding:0;">(you)</span>';
+            let passwordCellHtml = '<span class="table-empty" style="padding:0;">&mdash;</span>';
+            let actionsHtml = '<a href="/pos/account" class="row-action-btn view">My Account</a>';
 
             if (!isSelf && canEdit) {
-                actionsHtml = targetUser.is_active
-                    ? '<button type="button" class="row-action-btn danger" data-action="deactivate" data-id="' + targetUser.id + '">Deactivate</button>'
-                    : '<button type="button" class="row-action-btn view" data-action="reactivate" data-id="' + targetUser.id + '">Reactivate</button>';
+                passwordCellHtml =
+                    '<button type="button" class="row-action-btn view" data-action="reset-password" data-id="' + targetUser.id + '">Reset</button>';
+
+                actionsHtml =
+                    '<button type="button" class="row-action-btn view" data-action="edit" data-id="' + targetUser.id + '">Edit</button> ' +
+                    (targetUser.is_active
+                        ? '<button type="button" class="row-action-btn danger" data-action="deactivate" data-id="' + targetUser.id + '">Deactivate</button>'
+                        : '<button type="button" class="row-action-btn view" data-action="reactivate" data-id="' + targetUser.id + '">Reactivate</button>');
             } else if (!isSelf) {
+                passwordCellHtml = '';
                 actionsHtml = '';
             }
 
             row.innerHTML =
                 '<td>' + escapeHtml(targetUser.name) + '</td>' +
                 '<td>' + escapeHtml(targetUser.email) + '</td>' +
-                '<td class="table-empty" style="padding:0;">&mdash;</td>' +
+                '<td class="table-empty" style="padding:0;">' + passwordCellHtml + '</td>' +
                 '<td>' + roleControl + '</td>' +
                 '<td>' + statusBadgeHtml + '</td>' +
                 '<td>' + actionsHtml + '</td>';
@@ -467,6 +579,125 @@
                 reactivateUser(parseInt(btn.getAttribute('data-id'), 10));
             });
         });
+
+        tbody.querySelectorAll('[data-action="edit"]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                openEditUserModal(parseInt(btn.getAttribute('data-id'), 10));
+            });
+        });
+
+        tbody.querySelectorAll('[data-action="reset-password"]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                openResetPasswordModal(parseInt(btn.getAttribute('data-id'), 10));
+            });
+        });
+    }
+
+    /* ---------------- Edit user modal ---------------- */
+
+    function openEditUserModal(userId) {
+        const targetUser = state.users.find(function (u) { return u.id === userId; });
+
+        if (!targetUser) {
+            return;
+        }
+
+        document.getElementById('edit-user-id').value = targetUser.id;
+        document.getElementById('edit-user-name').value = targetUser.name;
+        document.getElementById('edit-user-email').value = targetUser.email;
+        document.getElementById('edit-user-error').hidden = true;
+
+        document.getElementById('edit-user-modal').hidden = false;
+    }
+
+    function closeEditUserModal() {
+        document.getElementById('edit-user-modal').hidden = true;
+        document.getElementById('edit-user-form').reset();
+    }
+
+    async function submitEditUser(e) {
+        e.preventDefault();
+
+        const errorBox = document.getElementById('edit-user-error');
+        errorBox.hidden = true;
+
+        const userId = parseInt(document.getElementById('edit-user-id').value, 10);
+
+        const payload = {
+            name: document.getElementById('edit-user-name').value,
+            email: document.getElementById('edit-user-email').value,
+        };
+
+        try {
+            await apiFetch('/users/' + userId, {
+                method: 'PUT',
+                body: JSON.stringify(payload),
+            });
+
+            closeEditUserModal();
+            await loadUsers();
+        } catch (err) {
+            errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
+            errorBox.hidden = false;
+        }
+    }
+
+    /* ---------------- Reset password modal ---------------- */
+
+    function openResetPasswordModal(userId) {
+        const targetUser = state.users.find(function (u) { return u.id === userId; });
+
+        if (!targetUser) {
+            return;
+        }
+
+        document.getElementById('reset-password-user-id').value = targetUser.id;
+        document.getElementById('reset-password-user-label').textContent =
+            targetUser.name + ' (' + targetUser.email + ')';
+        document.getElementById('reset-password-error').hidden = true;
+
+        document.getElementById('reset-password-modal').hidden = false;
+    }
+
+    function closeResetPasswordModal() {
+        document.getElementById('reset-password-modal').hidden = true;
+        document.getElementById('reset-password-form').reset();
+    }
+
+    async function submitResetPassword(e) {
+        e.preventDefault();
+
+        const errorBox = document.getElementById('reset-password-error');
+        errorBox.hidden = true;
+
+        const userId = parseInt(document.getElementById('reset-password-user-id').value, 10);
+        const newPassword = document.getElementById('reset-password-new').value;
+        const confirmPassword = document.getElementById('reset-password-confirm').value;
+
+        if (newPassword !== confirmPassword) {
+            errorBox.textContent = 'New password and confirmation do not match.';
+            errorBox.hidden = false;
+            return;
+        }
+
+        const payload = {
+            password: newPassword,
+            password_confirmation: confirmPassword,
+            require_password_change: document.getElementById('reset-password-force-change').checked,
+        };
+
+        try {
+            await apiFetch('/users/' + userId + '/reset-password', {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
+
+            closeResetPasswordModal();
+            await loadUsers();
+        } catch (err) {
+            errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
+            errorBox.hidden = false;
+        }
     }
 
     async function changeUserRole(userId, newRole, selectEl) {
@@ -1047,12 +1278,14 @@
                 '<div class="receipt-row"><span>Status</span>' + statusBadge(sale.status) + '</div>' +
                 '<p class="receipt-section-title">Items</p>' +
                 itemsHtml +
-                '<div class="receipt-row" style="margin-top:8px;"><span>Subtotal</span><span>' + money(sale.subtotal) + '</span></div>' +
+                '<div class="receipt-row" style="margin-top:8px;"><span>Subtotal (VAT Incl.)</span><span>' + money(sale.subtotal) + '</span></div>' +
                 '<div class="receipt-row"><span>Discount</span><span>' + money(sale.discount) + '</span></div>' +
-                '<div class="receipt-row"><span>Tax</span><span>' + money(sale.tax) + '</span></div>' +
                 '<p class="receipt-section-title">Payment</p>' +
                 paymentsHtml +
-                '<div class="receipt-total-row"><span>Total</span><span>' + money(sale.total) + '</span></div>';
+                '<div class="receipt-total-row"><span>Total</span><span>' + money(sale.total) + '</span></div>' +
+                '<div class="receipt-row" style="opacity:0.75;font-size:11px;"><span>' +
+                (Number(sale.tax) === 0 ? 'VAT-exempt sale' : 'Includes VAT') +
+                '</span><span>' + money(sale.tax) + '</span></div>';
 
             const voidBtn = document.getElementById('receipt-void-btn');
             voidBtn.hidden = sale.status !== 'completed';
@@ -1473,15 +1706,19 @@
         if (existing) {
             existing.quantity += 1;
         } else {
+            const conversionFactor = Number(unit.conversion_factor || 1);
+
             state.cart.push({
                 product_id: product.id,
                 product_unit_id: unit.id,
                 name: product.name,
                 sku: product.sku,
                 unit_label: unit.name || unit.code || '',
-                unit_price: product.selling_price,
+                // selling_price is per base unit (e.g. per Piece) — scale it
+                // by the selected unit's conversion factor (e.g. x12 for a
+                // Box of 12) so a Box is priced as 12 pieces, not 1.
+                unit_price: product.selling_price * conversionFactor,
                 quantity: 1,
-                discount: 0,
             });
         }
 
@@ -1551,23 +1788,113 @@
         document.getElementById('checkout-btn').disabled = state.cart.length === 0 || !state.cashSession;
     }
 
+    let customerSuggestions = [];
+
+    function handleCustomerNameInput() {
+        const nameInput = document.getElementById('customer-name-input');
+        const query = nameInput.value.trim();
+
+        const matched = customerSuggestions.find(function (customer) {
+            return customer.name === query;
+        });
+
+        applyCustomerSelection(matched || null);
+
+        if (query === '') {
+            document.getElementById('customer-suggestions').innerHTML = '';
+            customerSuggestions = [];
+            return;
+        }
+
+        apiFetch('/customers/search?q=' + encodeURIComponent(query))
+            .then(function (customers) {
+                customerSuggestions = customers || [];
+
+                const datalist = document.getElementById('customer-suggestions');
+                datalist.innerHTML = customerSuggestions
+                    .map(function (customer) {
+                        return '<option value="' + escapeHtml(customer.name) + '"></option>';
+                    })
+                    .join('');
+
+                const exactMatch = customerSuggestions.find(function (customer) {
+                    return customer.name === nameInput.value.trim();
+                });
+
+                if (exactMatch) {
+                    applyCustomerSelection(exactMatch);
+                }
+            })
+            .catch(function () {
+                // Suggestions are a convenience only; ignore lookup failures.
+            });
+    }
+
+    function applyCustomerSelection(customer) {
+        const customerIdInput = document.getElementById('customer-id-input');
+        customerIdInput.value = customer ? customer.id : '';
+    }
+
+    function getSelectedDiscountType() {
+        const select = document.getElementById('discount-type-select');
+        const key = select.value;
+        const types = window.POS_DISCOUNT_TYPES || {};
+
+        if (!key || !types[key]) {
+            return null;
+        }
+
+        return {
+            key: key,
+            label: types[key].label,
+            percent: parseFloat(types[key].percent || 0),
+            vatExempt: !!types[key].vat_exempt,
+        };
+    }
+
+    function computeSubtotal() {
+        return round2(
+            state.cart.reduce(function (sum, item) {
+                return sum + item.unit_price * item.quantity;
+            }, 0)
+        );
+    }
+
     function computeTotals() {
-        const subtotal = state.cart.reduce(function (sum, item) {
-            return sum + item.unit_price * item.quantity;
-        }, 0);
-
-        const discountTotal = state.cart.reduce(function (sum, item) {
-            return sum + (item.discount || 0);
-        }, 0);
-
+        // selling_price is VAT-inclusive — the shelf price shown on the
+        // product card is exactly what the customer pays. VAT is only ever
+        // disclosed as a component of that price, never added on top, same
+        // as a Jollibee or supermarket receipt (menu/shelf price = total;
+        // the receipt just breaks out how much of it was VAT).
+        const subtotal = computeSubtotal();
+        const discountType = getSelectedDiscountType();
         const taxRate = parseFloat(document.getElementById('tax-rate-input').value || '0');
-        const taxable = Math.max(0, subtotal - discountTotal);
-        const tax = round2(taxable * (taxRate / 100));
-        const total = round2(taxable + tax);
+
+        let discountTotal;
+        let tax;
+        let total;
+
+        if (discountType && discountType.vatExempt) {
+            // Senior Citizen / PWD: back VAT out of the gross price first,
+            // discount the VAT-exclusive amount, sale becomes VAT-exempt.
+            const vatableSales = round2(subtotal / (1 + taxRate / 100));
+            discountTotal = round2(vatableSales * (discountType.percent / 100));
+            tax = 0;
+            total = round2(vatableSales - discountTotal);
+        } else {
+            discountTotal = discountType
+                ? round2(subtotal * (discountType.percent / 100))
+                : 0;
+
+            total = round2(Math.max(0, subtotal - discountTotal));
+
+            const vatableSales = round2(total / (1 + taxRate / 100));
+            tax = round2(total - vatableSales);
+        }
 
         return {
             subtotal: round2(subtotal),
-            discountTotal: round2(discountTotal),
+            discountTotal: round2(Math.min(discountTotal, subtotal)),
             tax: tax,
             total: total,
         };
@@ -1575,11 +1902,32 @@
 
     function renderCartTotals() {
         const totals = computeTotals();
+        const discountType = getSelectedDiscountType();
 
         document.getElementById('cart-subtotal').textContent = money(totals.subtotal);
         document.getElementById('cart-discount').textContent = money(totals.discountTotal);
-        document.getElementById('cart-tax').textContent = money(totals.tax);
         document.getElementById('cart-total').textContent = money(totals.total);
+
+        const taxRate = document.getElementById('tax-rate-input').value || '0';
+        const taxLabel = document.getElementById('cart-tax-label');
+
+        if (discountType && discountType.vatExempt) {
+            taxLabel.textContent = 'VAT-exempt sale';
+        } else {
+            taxLabel.textContent = 'Includes VAT (' + parseFloat(taxRate) + '%)';
+        }
+
+        document.getElementById('cart-tax').textContent = money(totals.tax);
+
+        const preview = document.getElementById('discount-amount-preview');
+
+        if (discountType) {
+            preview.textContent =
+                discountType.label + ' — ' + money(totals.discountTotal) + ' off' +
+                (discountType.vatExempt ? ' (VAT-exempt)' : '');
+        } else {
+            preview.textContent = '';
+        }
 
         const received = parseFloat(document.getElementById('received-amount-input').value || '0');
         document.getElementById('change-amount').textContent = money(Math.max(0, received - totals.total));
@@ -1625,8 +1973,18 @@
 
         const method = document.getElementById('payment-method-select').value;
         const taxRate = parseFloat(document.getElementById('tax-rate-input').value || '0');
+        const discountType = getSelectedDiscountType();
+        const discountIdNumber = document.getElementById('discount-id-input').value.trim();
+
+        if (discountType && !discountIdNumber) {
+            showError('An ID number is required to apply a ' + discountType.label + ' discount.');
+            return;
+        }
+
+        const customerId = document.getElementById('customer-id-input').value;
 
         const payload = {
+            customer_id: customerId ? parseInt(customerId, 10) : null,
             customer_name: document.getElementById('customer-name-input').value || null,
             payment_method: method,
             tax_rate: taxRate,
@@ -1637,10 +1995,19 @@
                     product_unit_id: item.product_unit_id,
                     location_id: state.configuredLocationId,
                     quantity: item.quantity,
-                    discount: item.discount || 0,
                 };
             }),
         };
+
+        /*
+         * Only send discount fields when a discount category is actually
+         * selected — the server's `required_with:discount_type` rule would
+         * otherwise demand an ID number on every plain sale.
+         */
+        if (discountType) {
+            payload.discount_type = discountType.key;
+            payload.discount_id_number = discountIdNumber;
+        }
 
         if (method === 'cash') {
             payload.received_amount = parseFloat(document.getElementById('received-amount-input').value || '0');
@@ -1663,6 +2030,11 @@
             document.getElementById('received-amount-input').value = '';
             document.getElementById('payment-reference-input').value = '';
             document.getElementById('customer-name-input').value = '';
+            document.getElementById('customer-id-input').value = '';
+            document.getElementById('discount-type-select').value = '';
+            document.getElementById('discount-id-input').value = '';
+            document.getElementById('discount-panel').hidden = true;
+            document.getElementById('discount-toggle-btn').hidden = false;
 
             renderCart();
             await refreshCashSession();
@@ -1685,11 +2057,143 @@
         }, 6000);
     }
 
+    /* ---------------- My Account page ---------------- */
+
+    function initAccountPage() {
+        if (!getToken()) {
+            window.location.href = '/pos/login';
+            return;
+        }
+
+        const user = getUser();
+
+        document.getElementById('cashier-name').textContent = user ? user.name : '';
+        document.getElementById('account-name').textContent = user ? user.name : '-';
+        document.getElementById('account-email').textContent = user ? user.email : '-';
+        document.getElementById('account-role').textContent = user ? capitalize(user.role) : '-';
+
+        if (user && user.must_change_password) {
+            document.getElementById('forced-change-notice').hidden = false;
+            // Nothing else in the app is usable until the password is
+            // changed — take away the escape hatch back to the POS too.
+            document.getElementById('account-nav-actions').innerHTML =
+                '<button id="logout-btn" class="header-btn logout-btn">Logout</button>';
+        }
+
+        document.getElementById('logout-btn').addEventListener('click', function () {
+            clearSession();
+            window.location.href = '/pos/login';
+        });
+
+        document.getElementById('change-email-form').addEventListener('submit', updateOwnEmail);
+        document.getElementById('change-password-form').addEventListener('submit', updateOwnPassword);
+
+        document.getElementById('page-loader').hidden = true;
+        document.getElementById('app').hidden = false;
+    }
+
+    function capitalize(value) {
+        if (!value) {
+            return '';
+        }
+
+        return value.charAt(0).toUpperCase() + value.slice(1);
+    }
+
+    async function updateOwnEmail(e) {
+        e.preventDefault();
+
+        const errorBox = document.getElementById('email-form-error');
+        const successBox = document.getElementById('email-form-success');
+        errorBox.hidden = true;
+        successBox.hidden = true;
+
+        const payload = {
+            email: document.getElementById('new-email').value,
+            current_password: document.getElementById('email-current-password').value,
+        };
+
+        try {
+            const response = await apiFetch('/account/email', {
+                method: 'PUT',
+                body: JSON.stringify(payload),
+            });
+
+            const user = getUser();
+            if (user && response.data) {
+                user.email = response.data.email;
+                setSession(getToken(), user);
+            }
+
+            document.getElementById('account-email').textContent = payload.email;
+            document.getElementById('change-email-form').reset();
+
+            successBox.textContent = response.message || 'Email updated.';
+            successBox.hidden = false;
+        } catch (err) {
+            errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
+            errorBox.hidden = false;
+        }
+    }
+
+    async function updateOwnPassword(e) {
+        e.preventDefault();
+
+        const errorBox = document.getElementById('password-form-error');
+        const successBox = document.getElementById('password-form-success');
+        errorBox.hidden = true;
+        successBox.hidden = true;
+
+        const newPassword = document.getElementById('new-password').value;
+        const confirmPassword = document.getElementById('new-password-confirmation').value;
+
+        if (newPassword !== confirmPassword) {
+            errorBox.textContent = 'New password and confirmation do not match.';
+            errorBox.hidden = false;
+            return;
+        }
+
+        const payload = {
+            current_password: document.getElementById('current-password').value,
+            password: newPassword,
+            password_confirmation: confirmPassword,
+        };
+
+        try {
+            const response = await apiFetch('/account/password', {
+                method: 'PUT',
+                body: JSON.stringify(payload),
+            });
+
+            const user = getUser();
+            if (user) {
+                user.must_change_password = false;
+                setSession(getToken(), user);
+            }
+
+            document.getElementById('change-password-form').reset();
+
+            successBox.textContent = response.message || 'Password changed.';
+            successBox.hidden = false;
+
+            // The forced-change lock is now lifted — send them back in.
+            if (user && document.getElementById('forced-change-notice') && !document.getElementById('forced-change-notice').hidden) {
+                window.setTimeout(function () {
+                    window.location.href = '/pos';
+                }, 1200);
+            }
+        } catch (err) {
+            errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
+            errorBox.hidden = false;
+        }
+    }
+
     return {
         initLoginPage: initLoginPage,
         initPosPage: initPosPage,
         initManagerPage: initManagerPage,
         initUsersPage: initUsersPage,
+        initAccountPage: initAccountPage,
     };
 })();
 

@@ -299,11 +299,18 @@ class PosCheckoutTest extends TestCase
                     'name' => 'Bottled Water',
                     'sku' => 'WATER-BOX',
                     'is_active' => true,
-                    'selling_price' => 300.00,
+                    // Priced per base unit (Piece) — the Inventory app
+                    // always requires a base-unit entry with factor 1.
+                    'selling_price' => 25.00,
                     'product_units' => [
                         [
-                            'id' => 20,
+                            'id' => 21,
                             'is_default' => true,
+                            'conversion_factor' => 1,
+                        ],
+                        [
+                            'id' => 20,
+                            'is_default' => false,
                             'conversion_factor' => 12,
                         ],
                     ],
@@ -338,6 +345,7 @@ class PosCheckoutTest extends TestCase
             'opening_cash' => 500,
         ])->assertCreated();
 
+        // 2 Boxes of 12 @ ₱25/piece = ₱600.
         $response = $this->postJson('/api/pos/checkout', [
             'payment_method' => 'cash',
             'received_amount' => 700,
@@ -351,6 +359,7 @@ class PosCheckoutTest extends TestCase
         ]);
 
         $response->assertOk();
+        $this->assertEquals(600.0, (float) $response->json('total'));
 
         $saleItem = \App\Models\SaleItem::query()
             ->where('product_id', 101)
@@ -360,6 +369,77 @@ class PosCheckoutTest extends TestCase
         $this->assertEquals(12.0, (float) $saleItem->conversion_factor);
         $this->assertEquals(24.0, (float) $saleItem->base_quantity);
         $this->assertEquals(2.0, (float) $saleItem->quantity);
+        $this->assertEquals(300.0, (float) $saleItem->unit_price);
+        $this->assertEquals(600.0, (float) $saleItem->subtotal);
+    }
+
+    public function test_checkout_scales_selling_price_by_the_selected_units_conversion_factor(): void
+    {
+        // selling_price is priced per base unit (e.g. per Piece). Selling
+        // "1 Box" of a 12-piece product must charge for 12 pieces, not 1.
+        Http::fake([
+            'http://127.0.0.1:8001/api/products' => Http::response([
+                [
+                    'id' => 101,
+                    'name' => 'Canned Soda',
+                    'sku' => 'SODA-001',
+                    'is_active' => true,
+                    'selling_price' => 20.00, // per Piece
+                    'product_units' => [
+                        ['id' => 10, 'is_default' => true, 'conversion_factor' => 1],
+                        ['id' => 11, 'is_default' => false, 'conversion_factor' => 12], // Box of 12
+                    ],
+                    'inventories' => [
+                        ['location_id' => 1, 'base_quantity' => 100],
+                    ],
+                ],
+            ], 200),
+            'http://127.0.0.1:8001/api/inventory/out' => Http::response([
+                'inventory' => ['base_quantity' => 76],
+                'transaction' => ['id' => 999],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create([
+            'email' => 'cashier-box-pricing@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        $loginResponse = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password123',
+        ]);
+
+        $loginResponse->assertOk();
+        $this->withHeader('Authorization', 'Bearer ' . $loginResponse->json('token'));
+
+        $this->postJson('/api/cash-sessions/open', [
+            'opening_cash' => 500,
+        ])->assertCreated();
+
+        // 2 Boxes of 12 = 24 pieces @ ₱20/piece = ₱480, not ₱40.
+        $response = $this->postJson('/api/pos/checkout', [
+            'payment_method' => 'cash',
+            'received_amount' => 500,
+            'items' => [[
+                'product_id' => 101,
+                'quantity' => 2,
+                'location_id' => 1,
+                'product_unit_id' => 11,
+            ]],
+        ]);
+
+        $response->assertOk();
+        $this->assertEquals(480.0, (float) $response->json('total'));
+
+        $saleItem = \App\Models\SaleItem::query()
+            ->where('product_id', 101)
+            ->firstOrFail();
+
+        // unit_price is per the unit actually sold (per Box: ₱20 x 12).
+        $this->assertEquals(240.0, (float) $saleItem->unit_price);
+        $this->assertEquals(480.0, (float) $saleItem->subtotal);
+        $this->assertEquals(24.0, (float) $saleItem->base_quantity);
     }
 
     public function test_authenticated_user_can_checkout_and_deduct_inventory_with_open_cash_session(): void
@@ -723,8 +803,11 @@ class PosCheckoutTest extends TestCase
         $response->assertJsonPath('data.total', 350);
     }
 
-    public function test_tax_is_applied_after_discount_and_report_returns_daily_summary(): void
+    public function test_selling_price_is_vat_inclusive_so_total_never_exceeds_the_shelf_price(): void
     {
+        // selling_price is what the customer sees and pays (like a
+        // Jollibee menu price or a supermarket shelf tag) — VAT is only
+        // ever disclosed as a component of it, never added on top.
         Http::fake([
             'http://127.0.0.1:8001/api/products' => Http::response([
                 [
@@ -770,8 +853,6 @@ class PosCheckoutTest extends TestCase
         $checkout = $this->postJson('/api/pos/checkout', [
             'payment_method' => 'cash',
             'received_amount' => 110,
-            'discount' => 10,
-            'discount_reason' => 'Loyalty discount',
             'items' => [[
                 'product_id' => 101,
                 'quantity' => 1,
@@ -781,14 +862,153 @@ class PosCheckoutTest extends TestCase
         ]);
 
         $checkout->assertOk();
-        $checkout->assertJsonPath('total', 100.8);
+        // No discount: the ₱100 shelf price is exactly what's charged.
+        $checkout->assertJsonPath('total', 100);
+        // VAT is disclosed as the component already inside that ₱100,
+        // not an extra charge: 100 / 1.12 = 89.29, so VAT = 10.71.
+        $checkout->assertJsonPath('tax_total', 10.71);
 
         $report = $this->getJson('/api/sales/report?from=' . now()->format('Y-m-d') . '&to=' . now()->format('Y-m-d'));
 
         $report->assertOk();
         $report->assertJsonPath('meta.total_sales', 1);
-        $report->assertJsonPath('meta.total_amount', 100.8);
-        $report->assertJsonPath('meta.payment_summary.cash', 100.8);
+        $report->assertJsonPath('meta.total_amount', 100);
+        $report->assertJsonPath('meta.payment_summary.cash', 100);
+    }
+
+    public function test_non_exempt_discount_comes_off_the_vat_inclusive_price(): void
+    {
+        // Solo Parent (RA 11861) is a 10% discount but NOT VAT-exempt — the
+        // discount comes off the gross VAT-inclusive price, and VAT is
+        // still just the disclosed component of what's left.
+        Http::fake([
+            'http://127.0.0.1:8001/api/products' => Http::response([
+                [
+                    'id' => 101,
+                    'name' => 'Taxed Product',
+                    'sku' => 'TX-001',
+                    'is_active' => true,
+                    'selling_price' => 100.00,
+                    'product_units' => [
+                        ['id' => 10, 'is_default' => true, 'conversion_factor' => 1],
+                    ],
+                    'inventories' => [
+                        ['location_id' => 1, 'base_quantity' => 50],
+                    ],
+                ],
+            ], 200),
+            'http://127.0.0.1:8001/api/inventory/out' => Http::response([
+                'inventory' => ['base_quantity' => 49],
+                'transaction' => ['id' => 900],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create([
+            'email' => 'cashier-solo-parent@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        $loginResponse = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password123',
+        ]);
+
+        $loginResponse->assertOk();
+        $this->withHeader('Authorization', 'Bearer ' . $loginResponse->json('token'));
+
+        $this->postJson('/api/cash-sessions/open', [
+            'opening_cash' => 500,
+        ])->assertCreated();
+
+        config(['pos.tax_rate' => 12]);
+
+        $checkout = $this->postJson('/api/pos/checkout', [
+            'payment_method' => 'cash',
+            'received_amount' => 110,
+            'discount_type' => 'solo_parent',
+            'discount_id_number' => 'SP-12345',
+            'items' => [[
+                'product_id' => 101,
+                'quantity' => 1,
+                'location_id' => 1,
+                'product_unit_id' => 10,
+            ]],
+        ]);
+
+        $checkout->assertOk();
+        // 10% off the ₱100 shelf price = ₱10 discount, ₱90 charged.
+        $checkout->assertJsonPath('discount_total', 10);
+        $checkout->assertJsonPath('total', 90);
+        // VAT is the component already inside that ₱90: 90 / 1.12 = 80.36.
+        $checkout->assertJsonPath('tax_total', 9.64);
+    }
+
+    public function test_vat_exempt_discount_backs_vat_out_before_discounting(): void
+    {
+        // Senior Citizen / PWD (RA 9994 / RA 10754): VAT is backed out of
+        // the gross price FIRST, the 20% discount applies to that
+        // VAT-exclusive amount, and the sale is then fully VAT-exempt —
+        // no VAT is charged at all.
+        Http::fake([
+            'http://127.0.0.1:8001/api/products' => Http::response([
+                [
+                    'id' => 101,
+                    'name' => 'Taxed Product',
+                    'sku' => 'TX-001',
+                    'is_active' => true,
+                    'selling_price' => 112.00,
+                    'product_units' => [
+                        ['id' => 10, 'is_default' => true, 'conversion_factor' => 1],
+                    ],
+                    'inventories' => [
+                        ['location_id' => 1, 'base_quantity' => 50],
+                    ],
+                ],
+            ], 200),
+            'http://127.0.0.1:8001/api/inventory/out' => Http::response([
+                'inventory' => ['base_quantity' => 49],
+                'transaction' => ['id' => 900],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create([
+            'email' => 'cashier-senior@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        $loginResponse = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password123',
+        ]);
+
+        $loginResponse->assertOk();
+        $this->withHeader('Authorization', 'Bearer ' . $loginResponse->json('token'));
+
+        $this->postJson('/api/cash-sessions/open', [
+            'opening_cash' => 500,
+        ])->assertCreated();
+
+        config(['pos.tax_rate' => 12]);
+
+        $checkout = $this->postJson('/api/pos/checkout', [
+            'payment_method' => 'cash',
+            'received_amount' => 100,
+            'discount_type' => 'senior_citizen',
+            'discount_id_number' => 'SC-98765',
+            'items' => [[
+                'product_id' => 101,
+                'quantity' => 1,
+                'location_id' => 1,
+                'product_unit_id' => 10,
+            ]],
+        ]);
+
+        $checkout->assertOk();
+        // VATable sales = 112 / 1.12 = 100. 20% off = 20. Total = 80.
+        $checkout->assertJsonPath('discount_total', 20);
+        $checkout->assertJsonPath('total', 80);
+        // Fully VAT-exempt — no tax charged.
+        $checkout->assertJsonPath('tax_total', 0);
     }
 
     public function test_current_cash_session_endpoint_reports_open_session_and_expected_cash(): void
@@ -887,5 +1107,169 @@ class PosCheckoutTest extends TestCase
             'id' => $sale->id,
             'status' => 'voided',
         ]);
+    }
+
+    public function test_voiding_a_sale_restocks_inventory_for_every_item(): void
+    {
+        Http::fake([
+            'http://127.0.0.1:8001/api/inventory/in' => Http::response([
+                'inventory' => ['base_quantity' => 12],
+                'transaction' => ['id' => 500],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create([
+            'email' => 'cashier-void-restock@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        $loginResponse = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password123',
+        ]);
+
+        $loginResponse->assertOk();
+        $this->withHeader('Authorization', 'Bearer ' . $loginResponse->json('token'));
+
+        $sale = Sale::query()->create([
+            'user_id' => $user->id,
+            'sale_number' => Sale::generateSaleNumber(),
+            'subtotal' => 300,
+            'discount' => 0,
+            'tax' => 0,
+            'total' => 300,
+            'status' => 'completed',
+            'completed_at' => now(),
+        ]);
+
+        $sale->items()->create([
+            'product_id' => 101,
+            'product_unit_id' => 20,
+            'location_id' => 1,
+            'product_name' => 'Bottled Water (Box of 12)',
+            'sku' => 'WATER-BOX',
+            'unit_price' => 300,
+            'quantity' => 2,
+            'discount' => 0,
+            'subtotal' => 300,
+        ]);
+
+        $response = $this->postJson('/api/sales/' . $sale->id . '/void', [
+            'reason' => 'Customer changed their mind',
+        ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('restocked.0.product_id', 101);
+        $response->assertJsonPath('restocked.0.quantity', 2);
+
+        $sale->refresh();
+        $this->assertSame('voided', $sale->status);
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/api/inventory/in')
+                && $request['product_id'] == 101
+                && $request['product_unit_id'] == 20
+                && (float) $request['quantity'] === 2.0
+                && $request['location_id'] == 1;
+        });
+    }
+
+    public function test_refunding_a_sale_restocks_inventory_for_every_item(): void
+    {
+        Http::fake([
+            'http://127.0.0.1:8001/api/inventory/in' => Http::response([
+                'inventory' => ['base_quantity' => 5],
+                'transaction' => ['id' => 501],
+            ], 200),
+        ]);
+
+        $user = User::factory()->create([
+            'email' => 'cashier-refund-restock@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        $loginResponse = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password123',
+        ]);
+
+        $loginResponse->assertOk();
+        $this->withHeader('Authorization', 'Bearer ' . $loginResponse->json('token'));
+
+        $sale = Sale::query()->create([
+            'user_id' => $user->id,
+            'sale_number' => Sale::generateSaleNumber(),
+            'subtotal' => 100,
+            'discount' => 0,
+            'tax' => 0,
+            'total' => 100,
+            'status' => 'completed',
+            'completed_at' => now(),
+        ]);
+
+        $sale->items()->create([
+            'product_id' => 202,
+            'product_unit_id' => 10,
+            'location_id' => 1,
+            'product_name' => 'Canned Soda',
+            'sku' => 'SODA-001',
+            'unit_price' => 20,
+            'quantity' => 5,
+            'discount' => 0,
+            'subtotal' => 100,
+        ]);
+
+        $response = $this->postJson('/api/sales/' . $sale->id . '/refund', [
+            'reason' => 'Defective item',
+        ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('data.status', 'refunded');
+        $response->assertJsonPath('restocked.0.product_id', 202);
+        $response->assertJsonPath('restocked.0.quantity', 5);
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/api/inventory/in')
+                && $request['product_id'] == 202
+                && (float) $request['quantity'] === 5.0;
+        });
+    }
+
+    public function test_a_voided_sale_cannot_be_voided_or_refunded_again(): void
+    {
+        $user = User::factory()->create([
+            'email' => 'cashier-double-void@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        $loginResponse = $this->postJson('/api/login', [
+            'email' => $user->email,
+            'password' => 'password123',
+        ]);
+
+        $loginResponse->assertOk();
+        $this->withHeader('Authorization', 'Bearer ' . $loginResponse->json('token'));
+
+        $sale = Sale::query()->create([
+            'user_id' => $user->id,
+            'sale_number' => Sale::generateSaleNumber(),
+            'subtotal' => 300,
+            'discount' => 0,
+            'tax' => 0,
+            'total' => 300,
+            'status' => 'voided',
+            'voided_at' => now(),
+        ]);
+
+        // No Http::fake here at all — if either endpoint tried to restock
+        // again, the real HTTP client would throw a connection error and
+        // fail the test, proving nothing double-applies.
+        $this->postJson('/api/sales/' . $sale->id . '/void')
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'This sale has already been voided or refunded.');
+
+        $this->postJson('/api/sales/' . $sale->id . '/refund')
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'This sale cannot be refunded because it is already voided or refunded.');
     }
 }

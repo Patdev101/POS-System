@@ -19,7 +19,10 @@ Route::get('/pos/login', function () {
 });
 
 Route::get('/pos', function () {
-    return view('pos.index');
+    return view('pos.index', [
+        'taxRate' => (float) config('pos.tax_rate', 0),
+        'discountTypes' => config('pos.discount_types', []),
+    ]);
 });
 
 Route::get('/pos/manager', function () {
@@ -28,4 +31,8 @@ Route::get('/pos/manager', function () {
 
 Route::get('/pos/manager/users', function () {
     return view('pos.users');
+});
+
+Route::get('/pos/account', function () {
+    return view('pos.account');
 });

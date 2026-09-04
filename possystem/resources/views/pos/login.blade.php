@@ -23,6 +23,10 @@
 
             <button type="submit">Sign In</button>
         </form>
+
+        <p class="login-subtitle" style="margin-top: 16px;">
+            Forgot your password? Please contact an administrator.
+        </p>
     </div>
 
     <script src="/pos-assets/app.js?v={{ filemtime(public_path('pos-assets/app.js')) }}"></script>

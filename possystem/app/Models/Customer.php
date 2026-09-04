@@ -11,6 +11,7 @@ class Customer extends Model
         'name',
         'phone',
         'email',
+        'default_discount_percent',
     ];
 
     public function sales(): HasMany

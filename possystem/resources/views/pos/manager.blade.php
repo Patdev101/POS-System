@@ -33,6 +33,7 @@
             <div class="header-actions">
                 <a href="/pos" class="header-btn">Back to POS</a>
                 <a href="/pos/manager/users" class="header-btn">Manage Users</a>
+                <a href="/pos/account" class="header-btn">My Account</a>
                 <span class="logged-in-badge">Logged in: <strong id="cashier-name">User</strong></span>
                 <button id="logout-btn" class="header-btn logout-btn">Logout</button>
             </div>

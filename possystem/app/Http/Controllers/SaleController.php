@@ -209,10 +209,14 @@ class SaleController extends Controller
         }
 
         $lines[] = str_repeat('-', $width);
-        $lines[] = $this->receiptLine('Subtotal', (float) $sale->subtotal, $width);
+        $lines[] = $this->receiptLine('Subtotal (VAT Incl.)', (float) $sale->subtotal, $width);
         $lines[] = $this->receiptLine('Discount', (float) $sale->discount, $width);
-        $lines[] = $this->receiptLine('Tax', (float) $sale->tax, $width);
         $lines[] = $this->receiptLine('TOTAL', (float) $sale->total, $width);
+        $lines[] = $this->receiptLine(
+            (float) $sale->tax === 0.0 ? 'VAT-exempt sale' : 'Includes VAT',
+            (float) $sale->tax,
+            $width
+        );
         $lines[] = str_repeat('-', $width);
 
         foreach ($sale->payments as $payment) {

@@ -18,6 +18,8 @@ return Application::configure(basePath: dirname(__DIR__))
             ? null
             : route('login');
     });
+
+    $middleware->appendToGroup('api', \App\Http\Middleware\EnsureNoForcedPasswordChange::class);
 })
 
     ->withExceptions(function (Exceptions $exceptions): void {

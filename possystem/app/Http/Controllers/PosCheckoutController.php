@@ -10,6 +10,7 @@ use App\Services\PosAuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class PosCheckoutController extends Controller
 {
@@ -18,14 +19,22 @@ class PosCheckoutController extends Controller
         InventoryService $inventoryService,
         PosAuditLogger $auditLogger
     ): JsonResponse {
+        $discountTypes = (array) config('pos.discount_types', []);
+
         $validated = $request->validate([
+            'customer_id' => ['nullable', 'integer', 'exists:customers,id'],
             'customer_name' => ['nullable', 'string', 'max:255'],
             'payment_method' => ['required', 'string', 'in:cash,card,gcash'],
             'received_amount' => ['nullable', 'numeric', 'min:0'],
             'payment_reference' => ['nullable', 'string', 'max:255'],
             'idempotency_key' => ['nullable', 'string', 'max:255'],
-            'discount' => ['nullable', 'numeric', 'min:0'],
-            'discount_reason' => ['nullable', 'string', 'max:255', 'required_with:discount'],
+            // Discount is never a free-typed percentage or amount — a cashier
+            // may only pick one of the fixed statutory categories in
+            // config('pos.discount_types') and record the ID that qualifies
+            // for it. The percentage applied always comes from that config,
+            // never from the request.
+            'discount_type' => ['nullable', 'string', Rule::in(array_keys($discountTypes))],
+            'discount_id_number' => ['nullable', 'string', 'max:100', 'required_with:discount_type'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.product_id' => ['required', 'integer', 'min:1'],
             'items.*.quantity' => ['required', 'numeric', 'min:0.0001'],
@@ -82,7 +91,9 @@ class PosCheckoutController extends Controller
 
         $customer = null;
 
-        if (!empty($validated['customer_name'])) {
+        if (!empty($validated['customer_id'])) {
+            $customer = Customer::query()->find($validated['customer_id']);
+        } elseif (!empty($validated['customer_name'])) {
             $customer = Customer::query()->firstOrCreate([
                 'name' => $validated['customer_name'],
             ]);
@@ -163,15 +174,19 @@ class PosCheckoutController extends Controller
                 ], 422);
             }
 
-            $unitPrice = (float) ($product['selling_price'] ?? 0);
+            // selling_price is priced per base unit (e.g. per Piece). A sale
+            // in a larger unit (Box, Case, ...) must scale by that unit's
+            // conversion factor, or a customer buying "1 Box" of a 12-piece
+            // product would only be charged for 1 piece.
+            $baseUnitPrice = (float) ($product['selling_price'] ?? 0);
 
-            if ($unitPrice <= 0) {
+            if ($baseUnitPrice <= 0) {
                 return response()->json([
                     'message' => "Product {$productId} does not have a valid selling price.",
                 ], 422);
             }
 
-            $lineSubtotal = round($unitPrice * $quantity, 2);
+            $lineSubtotal = round($baseUnitPrice * $requestedBaseQuantity, 2);
 
             $subtotal += $lineSubtotal;
 
@@ -180,7 +195,9 @@ class PosCheckoutController extends Controller
                 'product_name' => $product['name'] ?? 'Unknown Product',
                 'sku' => $product['sku'] ?? null,
                 'quantity' => $quantity,
-                'unit_price' => $unitPrice,
+                // Price per the unit actually sold (e.g. per Box), so it
+                // reads correctly on the receipt next to `quantity`.
+                'unit_price' => round($baseUnitPrice * $conversionFactor, 2),
                 'discount' => 0,
                 'subtotal' => $lineSubtotal,
                 'product_unit_id' => $productUnitId,
@@ -190,10 +207,43 @@ class PosCheckoutController extends Controller
             ];
         }
 
-        // Discount is a single whole-sale amount with a mandatory reason (like
-        // void/refund reasons), not a per-item field a cashier can quietly tweak.
-        $discountTotal = (float) ($validated['discount'] ?? 0);
-        $discountReason = $discountTotal > 0 ? ($validated['discount_reason'] ?? null) : null;
+        // Discount is always one of the fixed statutory categories from
+        // config('pos.discount_types') — the percentage and VAT-exemption
+        // flag come from that config, never from the request, so a cashier
+        // (or a tampered request) cannot grant an arbitrary percentage.
+        $discountType = $validated['discount_type'] ?? null;
+        $discountIdNumber = $discountType ? $validated['discount_id_number'] : null;
+        $discountConfig = $discountType ? $discountTypes[$discountType] : null;
+
+        $discountPercent = $discountConfig['percent'] ?? 0;
+        $discountReason = $discountConfig
+            ? $discountConfig['label'] . ' (ID: ' . $discountIdNumber . ')'
+            : null;
+
+        $vatExempt = (bool) ($discountConfig['vat_exempt'] ?? false);
+
+        // selling_price is VAT-inclusive — the shelf price customers see is
+        // exactly what they pay. VAT is only ever disclosed as a component
+        // of that price (for the receipt/screen), never added on top of it.
+        // This matches standard PH retail practice (Jollibee, supermarkets,
+        // etc.): the menu/shelf price already includes VAT.
+        if ($vatExempt) {
+            // Senior Citizen / PWD (RA 9994 / RA 10754): back VAT out of the
+            // gross price first, apply the discount on that VAT-exclusive
+            // (VATable) amount, and the sale becomes fully VAT-exempt.
+            $vatableSales = round($subtotal / (1 + ($taxRate / 100)), 2);
+            $discountTotal = round($vatableSales * ($discountPercent / 100), 2);
+            $taxAmount = 0.0;
+            $total = round($vatableSales - $discountTotal, 2);
+        } else {
+            // Regular sale (or a non-exempt discount like Solo Parent): the
+            // discount comes off the gross VAT-inclusive price, and VAT is
+            // simply disclosed as the component already inside what's left.
+            $discountTotal = round($subtotal * ($discountPercent / 100), 2);
+            $total = round($subtotal - $discountTotal, 2);
+            $vatableSales = round($total / (1 + ($taxRate / 100)), 2);
+            $taxAmount = round($total - $vatableSales, 2);
+        }
 
         if ($discountTotal > $subtotal) {
             return response()->json([
@@ -202,10 +252,6 @@ class PosCheckoutController extends Controller
                 'discount' => round($discountTotal, 2),
             ], 422);
         }
-
-        $taxableAmount = round($subtotal - $discountTotal, 2);
-        $taxAmount = round($taxableAmount * ($taxRate / 100), 2);
-        $total = round($taxableAmount + $taxAmount, 2);
 
         if ($total < 0) {
             return response()->json([
@@ -263,7 +309,7 @@ class PosCheckoutController extends Controller
                 ];
             }
 
-            $sale = DB::transaction(function () use ($user, $customer, $cashSession, $preparedItems, $subtotal, $discountTotal, $discountReason, $taxAmount, $total, $validated, $idempotencyKey, $change) {
+            $sale = DB::transaction(function () use ($user, $customer, $cashSession, $preparedItems, $subtotal, $discountTotal, $discountReason, $discountType, $discountIdNumber, $taxAmount, $total, $validated, $idempotencyKey, $change) {
                 $sale = Sale::query()->create([
                     'user_id' => $user->id,
                     'customer_id' => $customer?->id,
@@ -274,6 +320,8 @@ class PosCheckoutController extends Controller
                     'subtotal' => $subtotal,
                     'discount' => $discountTotal,
                     'discount_reason' => $discountReason,
+                    'discount_type' => $discountType,
+                    'discount_id_number' => $discountIdNumber,
                     'tax' => $taxAmount,
                     'total' => $total,
                     'status' => 'completed',

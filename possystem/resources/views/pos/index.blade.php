@@ -33,6 +33,7 @@
             <div class="header-actions">
                 <span id="register-status" class="register-status">Register: ...</span>
                 <a href="/pos/manager" id="manager-console-link" class="header-btn" hidden>Manager Console</a>
+                <a href="/pos/account" class="header-btn">My Account</a>
                 <span class="logged-in-badge">Logged in: <strong id="cashier-name">User</strong></span>
                 <button id="logout-btn" class="header-btn logout-btn">Logout</button>
             </div>
@@ -102,7 +103,7 @@
                 <div class="sale-details">
 
                     <div class="summary-row">
-                        <span>Subtotal</span>
+                        <span>Subtotal (VAT Incl.)</span>
                         <strong id="cart-subtotal">₱0.00</strong>
                     </div>
 
@@ -111,12 +112,16 @@
                         <strong id="cart-discount">₱0.00</strong>
                     </div>
 
-                    <input type="hidden" id="tax-rate-input" value="0">
-                    <span id="cart-tax" hidden>₱0.00</span>
+                    <input type="hidden" id="tax-rate-input" value="{{ $taxRate }}">
 
                     <div class="sale-total">
                         <span>Total</span>
                         <strong id="cart-total">₱0.00</strong>
+                    </div>
+
+                    <div class="summary-row" style="opacity: 0.75; font-size: 12px;">
+                        <span id="cart-tax-label">Includes VAT ({{ rtrim(rtrim(number_format($taxRate, 2), '0'), '.') ?: '0' }}%)</span>
+                        <span id="cart-tax">₱0.00</span>
                     </div>
 
                 </div>
@@ -137,7 +142,50 @@
                     <div id="session-summary" class="session-summary" hidden></div>
 
                     <label for="customer-name-input">Customer</label>
-                    <input type="text" id="customer-name-input" placeholder="Walk-in Customer">
+                    <input
+                        type="text"
+                        id="customer-name-input"
+                        placeholder="Walk-in Customer"
+                        list="customer-suggestions"
+                        autocomplete="off"
+                    >
+                    <datalist id="customer-suggestions"></datalist>
+                    <input type="hidden" id="customer-id-input" value="">
+
+                    <div id="discount-section">
+
+                        <button type="button" id="discount-toggle-btn" class="secondary-btn">
+                            + Apply Discount
+                        </button>
+
+                        <div id="discount-panel" hidden>
+
+                            <label for="discount-type-select">Discount type</label>
+                            <select id="discount-type-select">
+                                <option value="">-- Select ID-based discount --</option>
+                                @foreach ($discountTypes as $key => $type)
+                                    <option value="{{ $key }}" data-percent="{{ $type['percent'] }}">
+                                        {{ $type['label'] }} ({{ $type['percent'] }}%)
+                                    </option>
+                                @endforeach
+                            </select>
+
+                            <label for="discount-id-input">ID number</label>
+                            <input
+                                type="text"
+                                id="discount-id-input"
+                                placeholder="ID number on the Senior/PWD/Solo Parent card"
+                            >
+
+                            <p id="discount-amount-preview" class="gcash-qr-hint"></p>
+
+                            <button type="button" id="discount-remove-btn" class="secondary-btn danger">
+                                Remove discount
+                            </button>
+
+                        </div>
+
+                    </div>
 
                     <div class="two-col">
                         <div>
@@ -219,6 +267,9 @@
         </div>
     </div>
 
+    <script>
+        window.POS_DISCOUNT_TYPES = @json($discountTypes);
+    </script>
     <script src="/pos-assets/app.js?v={{ filemtime(public_path('pos-assets/app.js')) }}"></script>
     <script>
         Pos.initPosPage();

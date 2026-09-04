@@ -1,58 +1,105 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# POS System
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Laravel 12 point-of-sale app used by cashiers to check out sales, manage
+cash sessions, and view sales history. It has **no product data of its
+own** — every product, price, and stock level is fetched live from the
+separate **Inventory System** (`../inventory`) over a token-authenticated
+API, and every sale deducts/restores stock there too.
 
-## About Laravel
-
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
-
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
-
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+## Setup
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+### Key `.env` values
 
-## Contributing
+| Variable              | Purpose                                                                |
+|------------------------|--------------------------------------------------------------------------|
+| `INVENTORY_API_URL`    | Base URL of the Inventory app (e.g. `http://127.0.0.1:8001`).           |
+| `INVENTORY_API_TOKEN`  | Bearer token sent to the Inventory API. Must match Inventory's `.env` `INVENTORY_API_TOKEN`. |
+| `POS_LOCATION_ID`      | The single location this POS terminal sells from. Never client-supplied — read from config only, so a cashier (or a tampered request) can't sell from/deduct a different location. |
+| `POS_TAX_RATE`         | Store-wide VAT percentage (e.g. `12`). Fixed server-side config — a client-supplied tax rate is always ignored. **Must be kept in sync with Inventory's `VAT_RATE`** (separate apps, separate config — nothing enforces they match). |
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Pricing: VAT-inclusive, per base unit
 
-## Code of Conduct
+`selling_price` from the Inventory API is **VAT-inclusive** and priced
+**per base unit** (e.g. per Piece). Two things that follow from that:
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+1. **Selling a non-base unit scales by its conversion factor.** Selling
+   "1 Box" of a 12-piece product charges `selling_price × 12`, not
+   `selling_price × 1` — computed server-side in `PosCheckoutController`
+   using the product unit's `conversion_factor`, never trusted from the
+   client.
+2. **VAT is disclosed, never added on top.** The shelf price shown on the
+   product card is exactly what's charged — same as a Jollibee menu price
+   or a supermarket shelf tag. The checkout total is `subtotal − discount`;
+   VAT is only ever computed *backward* out of that number for the
+   receipt/cart display:
 
-## Security Vulnerabilities
+   ```
+   VATable Sales = Total ÷ (1 + tax_rate / 100)
+   VAT           = Total − VATable Sales
+   ```
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+   The cart panel and receipt show a small "Includes VAT (12%)" (or
+   "VAT-exempt sale") line under the Total — never a separate line added to
+   reach the total.
 
-## License
+## Discounts
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Discounts are **not** a free-typed amount or percentage — a cashier can
+only pick one of the fixed statutory categories in `config('pos.discount_types')`
+and record the qualifying ID number:
+
+| Category        | Percent | VAT-exempt |
+|------------------|---------|------------|
+| Senior Citizen (RA 9994) | 20% | Yes |
+| PWD (RA 10754)   | 20%     | Yes |
+| Solo Parent (RA 11861) | 10% | No |
+
+The percentage and VAT-exemption flag always come from that server-side
+config — never from the request — so a cashier can't grant an arbitrary
+discount. The two computation paths differ (see `PosCheckoutController`):
+
+- **VAT-exempt (Senior/PWD):** VAT is backed out of the gross price
+  *first*, the discount applies to that VAT-exclusive amount, and the sale
+  becomes fully VAT-exempt (₱0 tax charged) — matching the actual BIR rule.
+- **Non-exempt (Solo Parent):** the discount comes off the gross
+  VAT-inclusive price directly; VAT is still just the disclosed component
+  of what's left.
+
+## Checkout, void, and refund
+
+- Checkout deducts stock from Inventory (`POST /api/inventory/out`) and is
+  idempotent — a repeated request with the same `idempotency_key` returns
+  the original sale instead of double-charging/double-deducting.
+- **Void** and **Refund** both restock every sale item back into Inventory
+  (`POST /api/inventory/in`), using the exact product/unit/location
+  recorded on the sale. A sale that's already voided/refunded is rejected
+  outright, so stock can never be added back twice for the same sale. If
+  restocking any item fails, the whole void/refund is aborted and the sale
+  stays `completed` — it never marks a sale voided while silently failing
+  to restock.
+
+## Auto-refresh
+
+The product catalog on the POS screen re-fetches every 15 seconds (paused
+while the tab isn't visible, and instantly on tab focus) so a price or
+stock change made in Inventory shows up without a manual page reload. Items
+already in the cart keep their price at the time they were added — the
+same as any real POS.
+
+## Testing
+
+```bash
+php artisan test
+```
+
+Runs against an in-memory SQLite database (see `phpunit.xml`, which also
+pins `POS_TAX_RATE=0` so tests are deterministic regardless of the local
+`.env` value). External calls to the Inventory API are mocked with
+`Http::fake()` in the checkout tests.
