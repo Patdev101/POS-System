@@ -128,6 +128,7 @@ class PosProductController extends Controller
             'id' => (int) ($product['id'] ?? 0),
             'name' => $product['name'] ?? null,
             'sku' => $product['sku'] ?? null,
+            'image_url' => $product['image_url'] ?? null,
             'selling_price' => (float) ($product['selling_price'] ?? 0),
             'is_active' => (bool) ($product['is_active'] ?? false),
             'category' => [

@@ -1438,6 +1438,7 @@
 
         if (state.cashSession) {
             statusBadge.textContent = 'Register: OPEN';
+            statusBadge.className = 'register-status is-open';
             openBtn.disabled = true;
             closeBtn.disabled = false;
 
@@ -1453,6 +1454,7 @@
             );
         } else {
             statusBadge.textContent = 'Register: CLOSED';
+            statusBadge.className = 'register-status is-closed';
             openBtn.disabled = false;
             closeBtn.disabled = true;
 
@@ -1651,7 +1653,12 @@
                 }
             }
 
+            const imageHtml = product.image_url
+                ? '<img class="product-image" src="' + escapeHtml(product.image_url) + '" alt="' + escapeHtml(product.name) + '">'
+                : '<div class="product-image product-image-placeholder">No image</div>';
+
             card.innerHTML =
+                imageHtml +
                 '<div class="product-name-row">' +
                 '<div class="product-name">' +
                 escapeHtml(product.name) +

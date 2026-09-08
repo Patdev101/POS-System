@@ -45,17 +45,26 @@
         <!-- STATS -->
         <p id="stats-date-label" class="stats-date-label"></p>
         <div class="stats-row">
-            <div class="stat-card">
-                <div class="stat-label">Completed Sales</div>
-                <div class="stat-value" id="stat-completed">0</div>
+            <div class="stat-card stat-card-neutral">
+                <div class="stat-icon">✓</div>
+                <div>
+                    <div class="stat-label">Completed Sales</div>
+                    <div class="stat-value" id="stat-completed">0</div>
+                </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Total Sales</div>
-                <div class="stat-value stat-primary" id="stat-total">₱0.00</div>
+            <div class="stat-card stat-card-primary">
+                <div class="stat-icon">₱</div>
+                <div>
+                    <div class="stat-label">Total Sales</div>
+                    <div class="stat-value stat-primary" id="stat-total">₱0.00</div>
+                </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Voided Sales</div>
-                <div class="stat-value stat-danger" id="stat-voided">0</div>
+            <div class="stat-card stat-card-danger">
+                <div class="stat-icon">✕</div>
+                <div>
+                    <div class="stat-label">Voided Sales</div>
+                    <div class="stat-value stat-danger" id="stat-voided">0</div>
+                </div>
             </div>
         </div>
 

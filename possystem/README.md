@@ -103,3 +103,44 @@ Runs against an in-memory SQLite database (see `phpunit.xml`, which also
 pins `POS_TAX_RATE=0` so tests are deterministic regardless of the local
 `.env` value). External calls to the Inventory API are mocked with
 `Http::fake()` in the checkout tests.
+
+## Known limitations
+
+Read this before assuming a feature exists or extending one — these are
+current, deliberate gaps, not oversights to silently "fix":
+
+- **Single-location terminal, by design.** `POS_LOCATION_ID` is one value
+  per deployed instance — this app has no concept of a cashier switching
+  locations at runtime. Multiple physical stores means multiple deployed
+  POS instances, each with its own `.env`.
+- **No offline mode.** Every checkout, void, and refund is a live call to
+  the Inventory API (`INVENTORY_API_URL`). If Inventory is unreachable, the
+  POS cannot sell — there is no local queue-and-sync-later behavior.
+- **Tax rate and VAT rules are duplicated, unsynced config.** `POS_TAX_RATE`
+  here and Inventory's `VAT_RATE` are two separate `.env` values in two
+  separate apps; nothing enforces they match. The statutory discount table
+  (`config('pos.discount_types')`) is also hardcoded to three Philippine
+  categories (Senior/PWD/Solo Parent) — adding a new discount type means
+  editing that config and the checkout math in `PosCheckoutController`,
+  not a database row.
+- **Idempotency is checkout-only.** The `idempotency_key` guard prevents a
+  double-submitted sale from double-deducting stock, but void/refund have
+  no equivalent client-retry protection beyond the "already voided/refunded
+  sales are rejected outright" check — a genuine double-click race on
+  void/refund relies on that check being fast enough, not on a dedicated
+  idempotency key.
+- **No queue workers assumed running.** `QUEUE_CONNECTION` is effectively
+  synchronous for anything this app dispatches — a slow Inventory API
+  response blocks the checkout request until it completes or times out;
+  there's no background retry.
+- **Cart prices are snapshot-locked, deliberately.** An item added to cart
+  keeps its price even if Inventory changes that product's price seconds
+  later (matching real POS behavior) — this means a stale browser tab can
+  checkout at an old price if left open long enough between the 15-second
+  refreshes; there's no server-side re-validation of price at checkout
+  time against the latest Inventory value.
+- **No automated coverage for the Inventory-integration edge cases beyond
+  what `Http::fake()` mocks in the checkout tests** — real network
+  failures, timeouts, and partial-failure scenarios (e.g. stock deducted
+  in Inventory but the POS's own sale record fails to save afterward)
+  aren't exercised by the test suite.
