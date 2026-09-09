@@ -215,5 +215,7 @@
         Pos.initManagerPage();
     </script>
 
+    @include('pos.partials.confirm-modal')
+
 </body>
 </html>

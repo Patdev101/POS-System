@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 class InventoryService
@@ -52,6 +54,61 @@ class InventoryService
         }
 
         return null;
+    }
+
+    /**
+     * Confirm this POS terminal's configured tax rate (POS_TAX_RATE)
+     * matches Inventory's VAT_RATE. The two are separate .env values in
+     * separate apps with nothing else enforcing they match — a silent
+     * mismatch would mean the shelf price/VAT breakdown shown in
+     * Inventory doesn't match what the POS actually charges.
+     *
+     * Only throws on a *confirmed* mismatch. If the lightweight
+     * `/api/config` endpoint itself can't be reached, that's logged and
+     * swallowed rather than blocking checkout — a hiccup on this one
+     * endpoint shouldn't take down the POS when the products endpoint
+     * that actually matters is still working. Cached for 5 minutes so
+     * this doesn't add a second HTTP round-trip to every product-catalog
+     * refresh.
+     *
+     * @throws RuntimeException only if the rates are confirmed to differ.
+     */
+    public function assertTaxRateMatchesInventory(): void
+    {
+        $result = Cache::remember(
+            'pos:inventory-tax-rate-check',
+            now()->addMinutes(5),
+            function () {
+                try {
+                    $response = $this->safeRequest(function () {
+                        return $this->client()->get($this->baseUrl . '/api/config');
+                    });
+                } catch (RuntimeException $e) {
+                    Log::warning('Could not verify tax rate against Inventory: ' . $e->getMessage());
+
+                    return 'unknown';
+                }
+
+                if ($response->failed()) {
+                    Log::warning('Inventory /api/config request failed: HTTP ' . $response->status());
+
+                    return 'unknown';
+                }
+
+                $inventoryVatRate = (float) ($response->json('vat_rate') ?? 0);
+                $posTaxRate = (float) config('pos.tax_rate');
+
+                if (abs($inventoryVatRate - $posTaxRate) > 0.001) {
+                    return "POS_TAX_RATE ({$posTaxRate}) does not match Inventory's VAT_RATE ({$inventoryVatRate}).";
+                }
+
+                return 'ok';
+            }
+        );
+
+        if ($result !== 'ok' && $result !== 'unknown') {
+            throw new RuntimeException($result);
+        }
     }
 
     public function getLocations(): array

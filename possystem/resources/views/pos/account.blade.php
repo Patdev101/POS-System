@@ -75,6 +75,27 @@
             </div>
         </section>
 
+        <!-- CHANGE NAME -->
+        <section class="reports-section" style="margin-top:20px; max-width: 560px;">
+            <div class="section-heading-row">
+                <p class="section-eyebrow">Change Name</p>
+            </div>
+
+            <div class="table-card" style="padding: 20px;">
+                <form id="change-name-form">
+                    <div class="account-field">
+                        <label for="new-name">Full Name</label>
+                        <input type="text" id="new-name" maxlength="150" required>
+                    </div>
+
+                    <div id="name-form-error" class="modal-error" hidden></div>
+                    <div id="name-form-success" class="modal-error" style="background:#dcfce7;color:#166534;border-color:#bbf7d0;" hidden></div>
+
+                    <button type="submit" class="secondary-btn" style="margin-top:12px;">Save Name</button>
+                </form>
+            </div>
+        </section>
+
         <!-- CHANGE EMAIL -->
         <section class="reports-section" style="margin-top:20px; max-width: 560px;">
             <div class="section-heading-row">

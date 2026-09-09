@@ -170,6 +170,10 @@
         products: [],
         cart: [],
         idempotencyKey: null,
+        selectedCategory: '',
+        currentPage: 1,
+        pageSize: 12,
+        visibleProducts: [],
     };
 
     function initPosPage() {
@@ -206,12 +210,72 @@
         document.getElementById('search-input').addEventListener(
             'input',
             debounce(function (e) {
+                state.currentPage = 1;
                 loadProducts(e.target.value);
             }, 300)
         );
 
+        /*
+         * Keyboard shortcuts for the search box — cashiers scan/type all
+         * day, so these save a mouse trip on every single sale:
+         *   Enter -> add the first visible result to the cart
+         *   Esc   -> clear the search and refocus, ready for the next scan
+         */
+        document.getElementById('search-input').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+
+                const topProduct = (state.visibleProducts || [])[0];
+
+                if (!topProduct || topProduct.stock_quantity <= 0) {
+                    return;
+                }
+
+                const units =
+                    topProduct.units && topProduct.units.length
+                        ? topProduct.units
+                        : [{
+                              id: null,
+                              name: topProduct.base_unit ? topProduct.base_unit.name : 'unit',
+                              code: topProduct.base_unit ? topProduct.base_unit.code : '',
+                              conversion_factor: 1,
+                              is_default: true,
+                          }];
+
+                const defaultUnit =
+                    units.find(function (u) { return u.is_default; }) || units[0];
+
+                addToCart(topProduct, defaultUnit);
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                e.target.value = '';
+                state.currentPage = 1;
+                loadProducts('');
+            }
+        });
+
         document.getElementById('refresh-products-btn').addEventListener('click', function () {
             loadProducts(document.getElementById('search-input').value);
+        });
+
+        document.getElementById('category-filter').addEventListener('change', function (e) {
+            state.selectedCategory = e.target.value;
+            state.currentPage = 1;
+            renderProducts();
+        });
+
+        document.getElementById('products-prev-page').addEventListener('click', function () {
+            if (state.currentPage > 1) {
+                state.currentPage -= 1;
+                renderProducts();
+                document.getElementById('products-grid').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        });
+
+        document.getElementById('products-next-page').addEventListener('click', function () {
+            state.currentPage += 1;
+            renderProducts();
+            document.getElementById('products-grid').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         });
 
         document.getElementById('payment-method-select').addEventListener('change', updatePaymentFieldsVisibility);
@@ -701,9 +765,13 @@
     }
 
     async function changeUserRole(userId, newRole, selectEl) {
-        const confirmed = window.confirm('Change this user\'s role to "' + newRole + '"?');
+        const result = await confirmDialog({
+            title: 'Change role',
+            message: 'Change this user\'s role to "' + newRole + '"?',
+            confirmLabel: 'Change Role',
+        });
 
-        if (!confirmed) {
+        if (!result.confirmed) {
             loadUsers();
             return;
         }
@@ -715,6 +783,7 @@
             });
 
             await loadUsers();
+            showSuccess('Role updated.');
         } catch (err) {
             showError(err.data && err.data.message ? err.data.message : err.message);
             loadUsers();
@@ -724,18 +793,21 @@
     async function deactivateUser(userId) {
         const targetUser = state.users.find(function (u) { return u.id === userId; });
 
-        const confirmed = window.confirm(
-            'Deactivate ' + (targetUser ? targetUser.name : 'this user') + '\'s account?\n\n' +
-            'They will no longer be able to log in, but all of their past sales, voids, and refunds stay in the records exactly as they are — nothing is deleted.'
-        );
+        const result = await confirmDialog({
+            title: 'Deactivate account',
+            message: 'Deactivate ' + (targetUser ? targetUser.name : 'this user') + '\'s account? ' +
+                'They will no longer be able to log in, but all of their past sales, voids, and refunds stay in the records exactly as they are — nothing is deleted.',
+            confirmLabel: 'Deactivate',
+        });
 
-        if (!confirmed) {
+        if (!result.confirmed) {
             return;
         }
 
         try {
             await apiFetch('/users/' + userId + '/deactivate', { method: 'POST' });
             await loadUsers();
+            showSuccess('Account deactivated.');
         } catch (err) {
             showError(err.data && err.data.message ? err.data.message : err.message);
         }
@@ -1353,25 +1425,27 @@
 
         const sale = findSaleById(state.activeSaleId);
 
-        const confirmed = window.confirm(
-            'Void transaction ' + (sale ? sale.sale_number : state.activeSaleId) +
-            ' (' + money(sale ? sale.total : 0) + ')? This cannot be undone.'
-        );
+        const result = await confirmDialog({
+            title: 'Void transaction',
+            message: 'Void transaction ' + (sale ? sale.sale_number : state.activeSaleId) +
+                ' (' + money(sale ? sale.total : 0) + ')? This cannot be undone.',
+            withReason: true,
+            confirmLabel: 'Void Sale',
+        });
 
-        if (!confirmed) {
+        if (!result.confirmed) {
             return;
         }
-
-        const reason = window.prompt('Reason for voiding this sale (optional):', '') || null;
 
         try {
             await apiFetch('/sales/' + state.activeSaleId + '/void', {
                 method: 'POST',
-                body: JSON.stringify({ reason: reason }),
+                body: JSON.stringify({ reason: result.reason }),
             });
 
             closeReceiptModal();
             await refreshReports();
+            showSuccess('Sale voided.');
         } catch (err) {
             showError(err.data && err.data.message ? err.data.message : err.message);
         }
@@ -1384,25 +1458,27 @@
 
         const sale = findSaleById(state.activeSaleId);
 
-        const confirmed = window.confirm(
-            'Refund transaction ' + (sale ? sale.sale_number : state.activeSaleId) +
-            ' (' + money(sale ? sale.total : 0) + ')? This restocks the items and cannot be undone.'
-        );
+        const result = await confirmDialog({
+            title: 'Refund transaction',
+            message: 'Refund transaction ' + (sale ? sale.sale_number : state.activeSaleId) +
+                ' (' + money(sale ? sale.total : 0) + ')? This restocks the items and cannot be undone.',
+            withReason: true,
+            confirmLabel: 'Refund Sale',
+        });
 
-        if (!confirmed) {
+        if (!result.confirmed) {
             return;
         }
-
-        const reason = window.prompt('Reason for refunding this sale (optional):', '') || null;
 
         try {
             await apiFetch('/sales/' + state.activeSaleId + '/refund', {
                 method: 'POST',
-                body: JSON.stringify({ reason: reason }),
+                body: JSON.stringify({ reason: result.reason }),
             });
 
             closeReceiptModal();
             await refreshReports();
+            showSuccess('Sale refunded.');
         } catch (err) {
             showError(err.data && err.data.message ? err.data.message : err.message);
         }
@@ -1562,9 +1638,55 @@
         try {
             const response = await apiFetch('/pos/products?search=' + encodeURIComponent(search || ''));
             state.products = response.data || [];
+            populateCategoryFilter();
             renderProducts();
         } catch (err) {
             showError('Unable to load products: ' + err.message);
+        }
+    }
+
+    function populateCategoryFilter() {
+        const select = document.getElementById('category-filter');
+        if (!select) {
+            return;
+        }
+
+        const categories = [];
+        const seen = {};
+
+        state.products.forEach(function (product) {
+            const category = product.category;
+            if (!category || !category.id || seen[category.id]) {
+                return;
+            }
+            seen[category.id] = true;
+            categories.push(category);
+        });
+
+        categories.sort(function (a, b) {
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        const previousValue = state.selectedCategory;
+
+        select.innerHTML = '<option value="">All Categories</option>';
+
+        categories.forEach(function (category) {
+            const option = document.createElement('option');
+            option.value = String(category.id);
+            option.textContent = category.name || 'Unnamed Category';
+            select.appendChild(option);
+        });
+
+        const stillExists = categories.some(function (category) {
+            return String(category.id) === previousValue;
+        });
+
+        if (stillExists) {
+            select.value = previousValue;
+        } else {
+            state.selectedCategory = '';
+            select.value = '';
         }
     }
 
@@ -1575,7 +1697,56 @@
         const user = getUser();
         const isManager = isManagerRole();
 
-        state.products.forEach(function (product) {
+        const visibleProducts = state.products
+            .filter(function (product) {
+                if (!state.selectedCategory) {
+                    return true;
+                }
+                return product.category && String(product.category.id) === state.selectedCategory;
+            })
+            .slice()
+            .sort(function (a, b) {
+                const categoryA = (a.category && a.category.name) || '';
+                const categoryB = (b.category && b.category.name) || '';
+                const categoryCompare = categoryA.localeCompare(categoryB);
+                if (categoryCompare !== 0) {
+                    return categoryCompare;
+                }
+                return (a.name || '').localeCompare(b.name || '');
+            });
+
+        const pagination = document.getElementById('products-pagination');
+        const totalPages = Math.max(1, Math.ceil(visibleProducts.length / state.pageSize));
+
+        if (state.currentPage > totalPages) {
+            state.currentPage = totalPages;
+        }
+        if (state.currentPage < 1) {
+            state.currentPage = 1;
+        }
+
+        const pageStart = (state.currentPage - 1) * state.pageSize;
+        const pageProducts = visibleProducts.slice(pageStart, pageStart + state.pageSize);
+
+        if (!visibleProducts.length) {
+            grid.innerHTML = '<div class="empty-catalog">No products found.</div>';
+        }
+
+        if (visibleProducts.length > state.pageSize) {
+            pagination.hidden = false;
+            document.getElementById('products-page-current').textContent = String(state.currentPage);
+            document.getElementById('products-page-total').textContent = String(totalPages);
+            document.getElementById('products-page-count').textContent =
+                visibleProducts.length + (visibleProducts.length === 1 ? ' product' : ' products');
+            document.getElementById('products-prev-page').disabled = state.currentPage <= 1;
+            document.getElementById('products-next-page').disabled = state.currentPage >= totalPages;
+        } else {
+            pagination.hidden = true;
+        }
+
+        state.visibleProducts = pageProducts;
+
+        pageProducts.forEach(function (product) {
             const card = document.createElement('div');
             card.className = 'product-card' + (product.stock_quantity <= 0 ? ' out-of-stock' : '');
 
@@ -1705,12 +1876,37 @@
         });
     }
 
+    /*
+     * How many of `unit` can actually be sold, given the product's base-unit
+     * stock. A Box of 12 with 10 loose pieces in stock means 0 boxes
+     * available, not 10 — always divide by the unit's own conversion
+     * factor, never assume it's 1.
+     */
+    function maxSellableQuantity(product, unit) {
+        const conversionFactor = Number(unit.conversion_factor || 1) || 1;
+        const baseStock = Number(product.stock_quantity || 0);
+
+        return Math.floor(baseStock / conversionFactor);
+    }
+
     function addToCart(product, unit) {
+        const maxQty = maxSellableQuantity(product, unit);
+
+        if (maxQty < 1) {
+            showError('Not enough stock to add "' + product.name + '" (' + (unit.name || unit.code || 'unit') + ').');
+            return;
+        }
+
         const existing = state.cart.find(function (item) {
             return item.product_id === product.id && item.product_unit_id === unit.id;
         });
 
         if (existing) {
+            if (existing.quantity >= existing.max_quantity) {
+                showError('Only ' + formatQty(existing.max_quantity) + ' ' + existing.unit_label + ' of "' + existing.name + '" in stock.');
+                return;
+            }
+
             existing.quantity += 1;
         } else {
             const conversionFactor = Number(unit.conversion_factor || 1);
@@ -1726,6 +1922,11 @@
                 // Box of 12) so a Box is priced as 12 pieces, not 1.
                 unit_price: product.selling_price * conversionFactor,
                 quantity: 1,
+                // Snapshot of what was available when added, in *this*
+                // unit — matches the server's own stock check, so the
+                // cart can never let a cashier queue up more than what
+                // checkout would actually accept.
+                max_quantity: maxQty,
             });
         }
 
@@ -1748,6 +1949,10 @@
         state.cart.forEach(function (item, index) {
             const row = document.createElement('div');
             row.className = 'cart-item';
+            // Older cart entries (added before this cap existed) won't
+            // have max_quantity set — treat those as unbounded rather
+            // than crashing or silently locking the stepper at 0.
+            const itemMaxQuantity = Number.isFinite(item.max_quantity) ? item.max_quantity : Infinity;
             row.innerHTML =
                 '<div class="cart-item-info">' +
                 '<div class="cart-item-name">' +
@@ -1761,10 +1966,12 @@
                 '</div>' +
                 '<div class="cart-item-qty-controls">' +
                 '<button type="button" class="qty-dec">-</button>' +
-                '<span>' +
-                item.quantity +
-                '</span>' +
-                '<button type="button" class="qty-inc">+</button>' +
+                '<input type="number" class="qty-input" value="' + item.quantity + '" min="1"' +
+                (Number.isFinite(itemMaxQuantity) ? ' max="' + itemMaxQuantity + '"' : '') +
+                '>' +
+                '<button type="button" class="qty-inc"' +
+                (item.quantity >= itemMaxQuantity ? ' disabled' : '') +
+                '>+</button>' +
                 '</div>' +
                 '<button type="button" class="cart-item-remove">✕</button>';
 
@@ -1775,9 +1982,44 @@
             });
 
             row.querySelector('.qty-inc').addEventListener('click', function () {
+                if (item.quantity >= itemMaxQuantity) {
+                    showError('Only ' + formatQty(itemMaxQuantity) + ' ' + item.unit_label + ' of "' + item.name + '" in stock.');
+                    return;
+                }
+
                 item.quantity += 1;
                 state.idempotencyKey = null;
                 renderCart();
+            });
+
+            /*
+             * Manual quantity entry — a cashier typing "10" beats
+             * clicking + ten times. Only reacts on change (blur / Enter),
+             * not every keystroke, so the field isn't fighting the user
+             * mid-type. Clamps into range and tells the cashier why if
+             * their number got adjusted.
+             */
+            row.querySelector('.qty-input').addEventListener('change', function (e) {
+                const requested = parseInt(e.target.value, 10);
+
+                if (!Number.isFinite(requested) || requested < 1) {
+                    item.quantity = 1;
+                } else if (requested > itemMaxQuantity) {
+                    item.quantity = itemMaxQuantity;
+                    showError('Only ' + formatQty(itemMaxQuantity) + ' ' + item.unit_label + ' of "' + item.name + '" in stock — quantity adjusted.');
+                } else {
+                    item.quantity = requested;
+                }
+
+                state.idempotencyKey = null;
+                renderCart();
+            });
+
+            row.querySelector('.qty-input').addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    e.target.blur();
+                }
             });
 
             row.querySelector('.cart-item-remove').addEventListener('click', function () {
@@ -2024,6 +2266,7 @@
 
         const checkoutBtn = document.getElementById('checkout-btn');
         checkoutBtn.disabled = true;
+        checkoutBtn.classList.add('is-loading');
 
         try {
             const sale = await apiFetch('/pos/checkout', {
@@ -2047,21 +2290,125 @@
             await refreshCashSession();
             await loadProducts(document.getElementById('search-input').value);
             await refreshReports();
+
+            showSuccess('Sale ' + (sale && sale.sale_number ? sale.sale_number : '') + ' completed.');
         } catch (err) {
             showError(err.data && err.data.message ? err.data.message : err.message);
             checkoutBtn.disabled = false;
+        } finally {
+            checkoutBtn.classList.remove('is-loading');
         }
     }
 
 
-    function showError(message) {
+    /*
+     * Replaces window.confirm()/window.prompt() for destructive actions
+     * with a styled modal. Resolves to { confirmed, reason } — reason is
+     * only collected when options.withReason is true, and is trimmed to
+     * null if left blank (matching the old prompt()'s "optional" reason
+     * behavior). If the confirm-modal partial isn't present on a given
+     * page, resolves as if confirmed so callers never hang.
+     */
+    function confirmDialog(options) {
+        options = options || {};
+
+        return new Promise(function (resolve) {
+            var overlay = document.getElementById('confirm-modal-overlay');
+
+            if (!overlay) {
+                resolve({ confirmed: true, reason: null });
+                return;
+            }
+
+            var titleEl = document.getElementById('confirm-modal-title');
+            var messageEl = document.getElementById('confirm-modal-message');
+            var reasonGroup = document.getElementById('confirm-modal-reason-group');
+            var reasonInput = document.getElementById('confirm-modal-reason');
+            var confirmBtn = document.getElementById('confirm-modal-confirm');
+            var cancelBtn = document.getElementById('confirm-modal-cancel');
+
+            titleEl.textContent = options.title || 'Are you sure?';
+            messageEl.textContent = options.message || '';
+            reasonGroup.hidden = !options.withReason;
+            reasonInput.value = '';
+            confirmBtn.textContent = options.confirmLabel || 'Confirm';
+
+            overlay.hidden = false;
+
+            function cleanup() {
+                overlay.hidden = true;
+                confirmBtn.removeEventListener('click', onConfirm);
+                cancelBtn.removeEventListener('click', onCancel);
+                overlay.removeEventListener('click', onOverlayClick);
+                document.removeEventListener('keydown', onKeydown);
+            }
+
+            function onConfirm() {
+                var reason = options.withReason ? (reasonInput.value.trim() || null) : null;
+                cleanup();
+                resolve({ confirmed: true, reason: reason });
+            }
+
+            function onCancel() {
+                cleanup();
+                resolve({ confirmed: false, reason: null });
+            }
+
+            function onOverlayClick(event) {
+                if (event.target === overlay) {
+                    onCancel();
+                }
+            }
+
+            function onKeydown(event) {
+                if (event.key === 'Escape') {
+                    onCancel();
+                }
+            }
+
+            confirmBtn.addEventListener('click', onConfirm);
+            cancelBtn.addEventListener('click', onCancel);
+            overlay.addEventListener('click', onOverlayClick);
+            document.addEventListener('keydown', onKeydown);
+        });
+    }
+
+    function showToast(message, isSuccess) {
         const banner = document.getElementById('error-banner');
-        banner.textContent = message;
+        if (!banner) {
+            return;
+        }
+
+        banner.classList.remove('toast-hiding');
+        banner.classList.toggle('success-banner', !!isSuccess);
+        banner.innerHTML =
+            '<span>' + escapeHtml(message) + '</span>' +
+            '<button type="button" class="toast-close" aria-label="Dismiss">&times;</button>';
         banner.hidden = false;
-        window.clearTimeout(showError._t);
-        showError._t = window.setTimeout(function () {
-            banner.hidden = true;
-        }, 6000);
+
+        banner.querySelector('.toast-close').addEventListener('click', function () {
+            window.clearTimeout(showToast._t);
+            dismissToast();
+        });
+
+        function dismissToast() {
+            banner.classList.add('toast-hiding');
+            window.setTimeout(function () {
+                banner.hidden = true;
+                banner.classList.remove('toast-hiding');
+            }, 180);
+        }
+
+        window.clearTimeout(showToast._t);
+        showToast._t = window.setTimeout(dismissToast, isSuccess ? 4000 : 6000);
+    }
+
+    function showError(message) {
+        showToast(message, false);
+    }
+
+    function showSuccess(message) {
+        showToast(message, true);
     }
 
     /* ---------------- My Account page ---------------- */
@@ -2072,26 +2419,57 @@
             return;
         }
 
-        const user = getUser();
+        function renderAccountDetails(user) {
+            document.getElementById('cashier-name').textContent = user ? user.name : '';
+            document.getElementById('account-name').textContent = user ? user.name : '-';
+            document.getElementById('new-name').value = user ? user.name : '';
+            document.getElementById('account-email').textContent = user ? user.email : '-';
+            document.getElementById('account-role').textContent = user ? capitalize(user.role) : '-';
 
-        document.getElementById('cashier-name').textContent = user ? user.name : '';
-        document.getElementById('account-name').textContent = user ? user.name : '-';
-        document.getElementById('account-email').textContent = user ? user.email : '-';
-        document.getElementById('account-role').textContent = user ? capitalize(user.role) : '-';
-
-        if (user && user.must_change_password) {
-            document.getElementById('forced-change-notice').hidden = false;
-            // Nothing else in the app is usable until the password is
-            // changed — take away the escape hatch back to the POS too.
-            document.getElementById('account-nav-actions').innerHTML =
-                '<button id="logout-btn" class="header-btn logout-btn">Logout</button>';
+            if (user && user.must_change_password) {
+                document.getElementById('forced-change-notice').hidden = false;
+                // Nothing else in the app is usable until the password is
+                // changed — take away the escape hatch back to the POS too.
+                document.getElementById('account-nav-actions').innerHTML =
+                    '<button id="logout-btn" class="header-btn logout-btn">Logout</button>';
+            }
         }
 
-        document.getElementById('logout-btn').addEventListener('click', function () {
-            clearSession();
-            window.location.href = '/pos/login';
+        // Delegated (not attached directly to #logout-btn) because
+        // renderAccountDetails() can replace that button's markup
+        // entirely once the fresh must_change_password check comes
+        // back — a directly-attached listener would be lost when that
+        // happens.
+        document.getElementById('account-nav-actions').addEventListener('click', function (e) {
+            if (e.target.closest('#logout-btn')) {
+                clearSession();
+                window.location.href = '/pos/login';
+            }
         });
 
+        // Render immediately from whatever's cached, so the page isn't
+        // blank while the network request below is in flight...
+        renderAccountDetails(getUser());
+
+        // ...then refresh from the server and re-render. The cached
+        // copy is only ever updated when this specific browser logs in
+        // or saves a change — if an admin resets this account's
+        // password (forcing a change) or otherwise updates it from
+        // elsewhere, the local cache has no way to know until this
+        // happens. Without it, "must change password" could get stuck
+        // showing (or not showing) a stale value indefinitely.
+        apiFetch('/user')
+            .then(function (freshUser) {
+                setSession(getToken(), freshUser);
+                renderAccountDetails(freshUser);
+            })
+            .catch(function () {
+                // Offline/expired token etc. — the page already rendered
+                // from cache above, so just leave it as-is rather than
+                // erroring out over a background refresh.
+            });
+
+        document.getElementById('change-name-form').addEventListener('submit', updateOwnName);
         document.getElementById('change-email-form').addEventListener('submit', updateOwnEmail);
         document.getElementById('change-password-form').addEventListener('submit', updateOwnPassword);
 
@@ -2105,6 +2483,41 @@
         }
 
         return value.charAt(0).toUpperCase() + value.slice(1);
+    }
+
+    async function updateOwnName(e) {
+        e.preventDefault();
+
+        const errorBox = document.getElementById('name-form-error');
+        const successBox = document.getElementById('name-form-success');
+        errorBox.hidden = true;
+        successBox.hidden = true;
+
+        const payload = {
+            name: document.getElementById('new-name').value,
+        };
+
+        try {
+            const response = await apiFetch('/account/name', {
+                method: 'PUT',
+                body: JSON.stringify(payload),
+            });
+
+            const user = getUser();
+            if (user && response.data) {
+                user.name = response.data.name;
+                setSession(getToken(), user);
+            }
+
+            document.getElementById('account-name').textContent = payload.name;
+            document.getElementById('cashier-name').textContent = payload.name;
+
+            successBox.textContent = response.message || 'Name updated.';
+            successBox.hidden = false;
+        } catch (err) {
+            errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
+            errorBox.hidden = false;
+        }
     }
 
     async function updateOwnEmail(e) {

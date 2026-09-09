@@ -5,9 +5,9 @@
 **Database:** SQLite (local), shared inventory environment
 **Project path:** `possystem/` (this repo)
 **Runs on:** `http://127.0.0.1:8002` in this dev environment (not the Laravel default 8000 — check `php artisan serve --port=` before assuming the port)
-**Documentation date:** 2026-09-03 (rewritten — supersedes the 2026-09-02 version)
+**Documentation date:** 2026-09-09 (updated — see §14 for everything shipped since the 2026-09-03 version below; the rest of this file is otherwise unchanged and still accurate)
 
-This file is the canonical, up-to-date reference for this project. If another AI or developer picks this up later, read this file first before making UI or backend changes — several bugs were introduced in earlier sessions by not doing that.
+This file is the canonical, up-to-date reference for this project. If another AI or developer picks this up later, read this file first before making UI or backend changes — several bugs were introduced in earlier sessions by not doing that. All other project `.md` files (worklist/guide/status/progress docs) have been deleted as stale duplicates — this is now the only documentation file besides `README.md`, and it should be kept updated going forward instead of spawning new doc files.
 
 ---
 
@@ -307,3 +307,20 @@ A "delete this account" button was requested for resigned employees. **Checked b
 - Both apps need the **same** `INVENTORY_API_TOKEN` in their `.env`, and both need `config:clear` after changing it.
 - `config('app.timezone')` must match the shop's real timezone, or "today" in reports/stats will be wrong.
 - Before assuming something is broken, hard-check whether it's actually a stale-cache issue (asset `?v=` busting should prevent this now) versus a real bug.
+
+## 14. Shipped Since 2026-09-03 (UX pass, 2026-09-09)
+
+**Full suite: 64/64 tests passing** (up from 37).
+
+- **Category filter + pagination on the Products grid.** `state.selectedCategory`, `state.currentPage`/`pageSize` added; a category dropdown and a "next page" control were added so the grid stays usable once a store has many products, instead of one long unpaginated list.
+- **Toast notification system** replaced blocking success/error banners. `showToast()`/`showSuccess()`/`showError()` render a dismissible, auto-vanishing notice. **Bug found and fixed:** `.error-banner { display: flex; }` in CSS was overriding the browser's native `[hidden] { display: none }` rule (same recurring bug class as §9.6/§9.16 above, but on a new element) — the close button and the auto-dismiss timer both looked broken because toggling `.hidden = true` did nothing visually. Fixed with an explicit `.error-banner[hidden] { display: none; }` rule. The toast was also repositioned from floating over the header (where it visually collided with header buttons) to in-flow, directly above the Products section.
+- **Confirm-modal system replacing `window.confirm()`/`window.prompt()`.** `confirmDialog(options)` is a Promise-based modal (`resources/views/pos/partials/confirm-modal.blade.php`, shared via `@include` on `index.blade.php`, `manager.blade.php`, `users.blade.php`) used for void, refund, role change, and deactivate confirmations — consistent styling instead of native browser dialogs, with an optional reason field for void/refund.
+- **Keyboard shortcuts** on the product search box: Enter to add the top match / confirm, Esc to clear.
+- **Cart quantity now hard-capped to actual stock**, correctly accounting for unit conversion (Box vs Piece etc.), not just checkout-time rejection. `maxSellableQuantity(product, unit)` divides base stock by the unit's `conversion_factor`; `addToCart()` refuses to add past that cap, the cart's `+` button disables at the cap, and a manual quantity `<input type="number">` (added for convenience so a cashier doesn't have to click `+` ten times) clamps to the same cap on blur/Enter with a toast if the customer's requested amount exceeds what's in stock.
+- **"Change Name" added to the Account page** (`/pos/account`), mirroring the Inventory app's equivalent — `AccountController::updateName()` + `PUT /account/name`, logged via `PosAuditLogger::nameChangedBySelf()`.
+- **Account page stale-cache bug fixed.** The page previously rendered `must_change_password` and other fields from the client's login-time cached `user` object indefinitely, so e.g. a forced-password-change banner could keep showing after the password was already changed. Now renders from cache first (instant paint), then re-fetches `/api/user` fresh and re-renders.
+- **`.product-card` button-overlap bug fixed.** Root cause: both the unit `<select>` and the Add-to-cart button had `margin-top: auto` inside the same flex column, so they fought for the same free space and visually crushed the "View stock in other locations" toggle between them. Fixed with `gap: 6px` on `.product-card`, removing the stray `margin-top: auto` from `select`, and renaming `.other-locations-toggle` to `button.other-locations-toggle` to win the CSS specificity fight against the generic `.product-card button` rule (it was rendering as a full pill button instead of the intended small text link).
+- **`APP_NAME` live-fixed.** `.env` still had Laravel's default even though the receipt code already correctly read `config('app.name', 'Store')` — receipts were printing "Laravel" as the store name. Fixed in `.env` (not just the `.env.production` template) + `config:clear`.
+- **Two atomic void/refund race-condition tests added** (`test_voiding_the_same_sale_twice_only_restocks_once`, `test_refunding_the_same_sale_twice_only_restocks_once`), covering the atomic `WHERE status = X` claim pattern already in `SaleController::void()`/`refund()`.
+- **Deploy prep:** `.env.production` template (not live) and `public/web.config` (IIS rewrite rules for the front-controller pattern) added for local-server deployment. Dev-mode banner in the Inventory layout (not this app) auto-hides once `APP_ENV=production`.
+- **Repo cleanup (2026-09-09):** deleted 13 stray dated backup files (`*.BACKUP-2026-09-02`, `*.BEFORE-*-2026-09-02`) across `resources/js/`, `resources/views/pos/`, and `public/pos-assets/` — all pre-dated this session and were unreferenced by any route. Also deleted the duplicate/stale doc files `DEVELOPMENT_PROGRESS.md`, `POS_SYSTEM_IMPLEMENTATION_WORKLIST.md`, `POS_SYSTEM_PROJECT_GUIDE.md`, `POS_SYSTEM_STATUS.md` — this file is now the single source of truth.

@@ -185,5 +185,7 @@
         Pos.initUsersPage();
     </script>
 
+    @include('pos.partials.confirm-modal')
+
 </body>
 </html>

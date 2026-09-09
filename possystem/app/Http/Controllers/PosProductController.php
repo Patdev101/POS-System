@@ -15,6 +15,7 @@ class PosProductController extends Controller
         $locationId = (int) config('pos.location_id');
 
         try {
+            $inventoryService->assertTaxRateMatchesInventory();
             $products = $inventoryService->getProducts();
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 503);
@@ -58,6 +59,7 @@ class PosProductController extends Controller
         $locationId = (int) config('pos.location_id');
 
         try {
+            $inventoryService->assertTaxRateMatchesInventory();
             $products = $inventoryService->getProducts();
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 503);

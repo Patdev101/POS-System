@@ -174,6 +174,7 @@ class PosCheckoutTest extends TestCase
     public function test_pos_product_endpoint_returns_inventory_metadata_and_search_results(): void
     {
         Http::fake([
+            'http://127.0.0.1:8001/api/config' => Http::response(['vat_rate' => (float) config('pos.tax_rate')]),
             'http://127.0.0.1:8001/api/products' => Http::response([
                 [
                     'id' => 101,

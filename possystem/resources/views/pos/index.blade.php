@@ -90,7 +90,32 @@
                     <button type="button" id="refresh-products-btn" class="refresh-link">Refresh</button>
                 </div>
 
+                <div class="category-filter-row">
+                    <label for="category-filter">Category</label>
+                    <select id="category-filter">
+                        <option value="">All Categories</option>
+                    </select>
+                </div>
+
                 <div id="products-grid" class="products-grid"></div>
+
+                <div id="products-pagination" class="products-pagination" hidden>
+                    <button type="button" id="products-prev-page" class="page-nav-btn" aria-label="Previous page">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
+                    </button>
+
+                    <div class="page-info">
+                        <span id="products-page-current">1</span>
+                        <span class="page-info-sep">/</span>
+                        <span id="products-page-total">1</span>
+                    </div>
+
+                    <button type="button" id="products-next-page" class="page-nav-btn" aria-label="Next page">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg>
+                    </button>
+
+                    <span id="products-page-count" class="page-count"></span>
+                </div>
 
             </section>
 
@@ -283,6 +308,8 @@
     <script>
         Pos.initPosPage();
     </script>
+
+    @include('pos.partials.confirm-modal')
 
 </body>
 </html>

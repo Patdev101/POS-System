@@ -22,7 +22,20 @@ php artisan migrate
 | `INVENTORY_API_URL`    | Base URL of the Inventory app (e.g. `http://127.0.0.1:8001`).           |
 | `INVENTORY_API_TOKEN`  | Bearer token sent to the Inventory API. Must match Inventory's `.env` `INVENTORY_API_TOKEN`. |
 | `POS_LOCATION_ID`      | The single location this POS terminal sells from. Never client-supplied — read from config only, so a cashier (or a tampered request) can't sell from/deduct a different location. |
-| `POS_TAX_RATE`         | Store-wide VAT percentage (e.g. `12`). Fixed server-side config — a client-supplied tax rate is always ignored. **Must be kept in sync with Inventory's `VAT_RATE`** (separate apps, separate config — nothing enforces they match). |
+| `POS_TAX_RATE`         | Store-wide VAT percentage (e.g. `12`). Fixed server-side config — a client-supplied tax rate is always ignored. **Must be kept in sync with Inventory's `VAT_RATE`** — checked automatically at runtime (see below), but still two independently-set `.env` values. |
+
+## Tax rate health check
+
+Before serving the product catalog or a barcode lookup,
+`PosProductController` calls `InventoryService::assertTaxRateMatchesInventory()`,
+which fetches Inventory's `GET /api/config` (result cached 5 minutes) and
+compares its `vat_rate` against this app's own `POS_TAX_RATE`. If they're
+confirmed to differ, the request fails with `503` instead of silently
+charging the wrong tax. If `/api/config` itself can't be reached — as
+opposed to reachable but mismatched — that's logged as a warning and
+ignored, so a transient blip on that one endpoint doesn't take down
+checkout. This doesn't eliminate the two-`.env`-values problem (see Known
+Limitations), it just makes a mismatch loud instead of silent.
 
 ## Pricing: VAT-inclusive, per base unit
 
@@ -116,19 +129,34 @@ current, deliberate gaps, not oversights to silently "fix":
 - **No offline mode.** Every checkout, void, and refund is a live call to
   the Inventory API (`INVENTORY_API_URL`). If Inventory is unreachable, the
   POS cannot sell — there is no local queue-and-sync-later behavior.
-- **Tax rate and VAT rules are duplicated, unsynced config.** `POS_TAX_RATE`
-  here and Inventory's `VAT_RATE` are two separate `.env` values in two
-  separate apps; nothing enforces they match. The statutory discount table
-  (`config('pos.discount_types')`) is also hardcoded to three Philippine
-  categories (Senior/PWD/Solo Parent) — adding a new discount type means
-  editing that config and the checkout math in `PosCheckoutController`,
-  not a database row.
-- **Idempotency is checkout-only.** The `idempotency_key` guard prevents a
-  double-submitted sale from double-deducting stock, but void/refund have
-  no equivalent client-retry protection beyond the "already voided/refunded
-  sales are rejected outright" check — a genuine double-click race on
-  void/refund relies on that check being fast enough, not on a dedicated
-  idempotency key.
+- ✅ **~~Tax rate duplication~~ — now checked, not just documented.**
+  `POS_TAX_RATE` here and Inventory's `VAT_RATE` are still two separate
+  `.env` values in two separate apps, but `InventoryService::assertTaxRateMatchesInventory()`
+  now calls Inventory's `GET /api/config` (cached 5 minutes) before serving
+  the product catalog or a barcode lookup, and refuses (`503`) if the rates
+  are confirmed to differ. A hiccup reaching that one endpoint is logged
+  and swallowed rather than blocking checkout — only a *confirmed*
+  mismatch blocks. The two `.env` values still have to be set correctly by
+  hand; this only makes drift loud instead of silent.
+- The statutory discount table (`config('pos.discount_types')`) is
+  hardcoded to three Philippine categories (Senior/PWD/Solo Parent) —
+  adding a new discount type means editing that config and the checkout
+  math in `PosCheckoutController`, not a database row.
+- ✅ **~~Void/refund had no race protection~~ — fixed.** `SaleController::void()`/`refund()`
+  used to check `$sale->status` and *then* restock and save — two
+  concurrent requests (a double-click) could both read "not voided yet"
+  and both restock the same sale before either one's status update
+  landed. Both methods now atomically claim the sale first
+  (`Sale::where('id', ...)->where('status', $originalStatus)->update(...)`)
+  — only one request can win that conditional update, so the second
+  request fails immediately with "already voided or refunded" *before*
+  ever calling Inventory, instead of racing it. If the restock call itself
+  fails after the claim succeeds, the claim is reverted so the sale isn't
+  left stuck "voided" with stock never actually restored. Checkout's
+  `idempotency_key` guard is unrelated to this and still the only
+  idempotency mechanism for *duplicate submissions* of the same intended
+  action (as opposed to *concurrent* void/refund attempts, which is what
+  this fixes).
 - **No queue workers assumed running.** `QUEUE_CONNECTION` is effectively
   synchronous for anything this app dispatches — a slow Inventory API
   response blocks the checkout request until it completes or times out;
@@ -144,3 +172,4 @@ current, deliberate gaps, not oversights to silently "fix":
   failures, timeouts, and partial-failure scenarios (e.g. stock deducted
   in Inventory but the POS's own sale record fails to save afterward)
   aren't exercised by the test suite.
+

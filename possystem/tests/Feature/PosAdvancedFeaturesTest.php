@@ -14,6 +14,7 @@ class PosAdvancedFeaturesTest extends TestCase
     private function fakeInventory(): void
     {
         Http::fake([
+            'http://127.0.0.1:8001/api/config' => Http::response(['vat_rate' => (float) config('pos.tax_rate')]),
             'http://127.0.0.1:8001/api/products' => Http::response([
                 [
                     'id' => 101,
@@ -198,6 +199,87 @@ class PosAdvancedFeaturesTest extends TestCase
 
         $this->loginAs($manager);
         $this->postJson('/api/sales/' . $sale->id . '/void')->assertOk();
+    }
+
+    public function test_voiding_the_same_sale_twice_only_restocks_once(): void
+    {
+        $this->fakeInventory();
+
+        $owner = User::factory()->create([
+            'email' => 'owner-double-void@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        $sale = $this->makeVoidableSale($owner);
+
+        $sale->items()->create([
+            'product_id' => 101,
+            'product_unit_id' => 10,
+            'location_id' => 1,
+            'product_name' => 'Test Product',
+            'sku' => 'TP-001',
+            'unit_price' => 150,
+            'quantity' => 2,
+            'discount' => 0,
+            'subtotal' => 300,
+        ]);
+
+        $this->loginAs($owner);
+
+        $first = $this->postJson('/api/sales/' . $sale->id . '/void');
+        $first->assertOk();
+
+        $second = $this->postJson('/api/sales/' . $sale->id . '/void');
+        $second->assertStatus(422);
+        $second->assertJsonPath('message', 'This sale has already been voided or refunded.');
+
+        $restockCalls = Http::recorded(function ($request) {
+            return str_contains($request->url(), '/api/inventory/in');
+        });
+
+        $this->assertCount(1, $restockCalls, 'Stock must only be restored once, not once per void attempt.');
+
+        $this->assertSame('voided', $sale->fresh()->status);
+    }
+
+    public function test_refunding_the_same_sale_twice_only_restocks_once(): void
+    {
+        $this->fakeInventory();
+
+        $owner = User::factory()->create([
+            'email' => 'owner-double-refund@example.com',
+            'password' => Hash::make('password123'),
+        ]);
+
+        $sale = $this->makeVoidableSale($owner);
+
+        $sale->items()->create([
+            'product_id' => 101,
+            'product_unit_id' => 10,
+            'location_id' => 1,
+            'product_name' => 'Test Product',
+            'sku' => 'TP-001',
+            'unit_price' => 150,
+            'quantity' => 2,
+            'discount' => 0,
+            'subtotal' => 300,
+        ]);
+
+        $this->loginAs($owner);
+
+        $first = $this->postJson('/api/sales/' . $sale->id . '/refund');
+        $first->assertOk();
+
+        $second = $this->postJson('/api/sales/' . $sale->id . '/refund');
+        $second->assertStatus(422);
+
+        $restockCalls = Http::recorded(function ($request) {
+            return str_contains($request->url(), '/api/inventory/in');
+        });
+
+        $this->assertCount(1, $restockCalls, 'Stock must only be restored once, not once per refund attempt.');
+
+        $this->assertSame('refunded', $sale->fresh()->status);
     }
 
     public function test_product_lookup_matches_exact_sku_or_barcode(): void

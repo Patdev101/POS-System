@@ -14,6 +14,34 @@ class AccountController extends Controller
     ) {
     }
 
+    public function updateName(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:150'],
+        ]);
+
+        $oldName = $user->name;
+        $newName = trim($validated['name']);
+
+        if ($newName === $oldName) {
+            return response()->json([
+                'data' => $user->only(['id', 'name', 'email', 'role']),
+            ]);
+        }
+
+        $user->name = $newName;
+        $user->save();
+
+        $this->auditLogger->nameChangedBySelf($user, $oldName, $newName);
+
+        return response()->json([
+            'message' => 'Your name has been updated.',
+            'data' => $user->only(['id', 'name', 'email', 'role']),
+        ]);
+    }
+
     public function updateEmail(Request $request): JsonResponse
     {
         $user = $request->user();

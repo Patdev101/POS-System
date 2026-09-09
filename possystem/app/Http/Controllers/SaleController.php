@@ -7,6 +7,7 @@ use App\Services\InventoryService;
 use App\Services\PosAuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class SaleController extends Controller
 {
@@ -270,14 +271,37 @@ class SaleController extends Controller
             ], 403);
         }
 
-        if (in_array($sale->status, ['voided', 'refunded'], true)) {
+        $originalStatus = $sale->status;
+
+        if (in_array($originalStatus, ['voided', 'refunded'], true)) {
             return response()->json([
                 'message' => 'This sale has already been voided or refunded.',
                 'data' => $sale,
             ], 422);
         }
 
-        $sale->load('items');
+        $voidReason = trim((string) ($validated['reason'] ?? '')) !== '' ? $validated['reason'] : null;
+
+        // Atomically claim this sale for voiding: only one concurrent
+        // request can flip the status here (a double-click/double-tap
+        // race loses the second attempt outright, before it ever touches
+        // Inventory), instead of two requests both reading "not voided
+        // yet" and both restocking.
+        $claimed = Sale::where('id', $sale->id)
+            ->where('status', $originalStatus)
+            ->update([
+                'status' => 'voided',
+                'void_reason' => $voidReason,
+                'voided_at' => now(),
+            ]);
+
+        if ($claimed === 0) {
+            return response()->json([
+                'message' => 'This sale has already been voided or refunded.',
+            ], 422);
+        }
+
+        $sale->refresh()->load('items');
 
         $restocked = [];
         $warnings = [];
@@ -304,6 +328,16 @@ class SaleController extends Controller
                     'quantity' => (float) $item->quantity,
                 ];
             } catch (\Throwable $e) {
+                // Restocking failed after the sale was already claimed as
+                // voided — revert the claim so the sale isn't left marked
+                // voided while stock was never actually restored, and so
+                // a retry is possible instead of the sale being stuck.
+                Sale::where('id', $sale->id)->update([
+                    'status' => $originalStatus,
+                    'void_reason' => null,
+                    'voided_at' => null,
+                ]);
+
                 return response()->json([
                     'message' => 'Unable to restock inventory for this sale. The sale was not voided.',
                     'error' => $e->getMessage(),
@@ -312,12 +346,7 @@ class SaleController extends Controller
             }
         }
 
-        $sale->status = 'voided';
-        $sale->void_reason = trim((string) ($validated['reason'] ?? '')) !== '' ? $validated['reason'] : null;
-        $sale->voided_at = now();
-        $sale->save();
-
-        $auditLogger->saleVoided($sale, $sale->void_reason);
+        $auditLogger->saleVoided($sale, $voidReason);
 
         return response()->json([
             'message' => 'Sale voided successfully.',
@@ -357,13 +386,34 @@ class SaleController extends Controller
             ], 403);
         }
 
-        if (in_array($sale->status, ['voided', 'refunded'], true)) {
+        $originalStatus = $sale->status;
+
+        if (in_array($originalStatus, ['voided', 'refunded'], true)) {
             return response()->json([
                 'message' => 'This sale cannot be refunded because it is already voided or refunded.',
             ], 422);
         }
 
-        $sale->load('items');
+        $refundReason = trim((string) ($validated['reason'] ?? '')) !== '' ? $validated['reason'] : null;
+
+        // Atomically claim this sale for refunding — see the matching
+        // comment in void() for why: prevents two concurrent requests
+        // from both restocking the same sale.
+        $claimed = Sale::where('id', $sale->id)
+            ->where('status', $originalStatus)
+            ->update([
+                'status' => 'refunded',
+                'refund_reason' => $refundReason,
+                'refunded_at' => now(),
+            ]);
+
+        if ($claimed === 0) {
+            return response()->json([
+                'message' => 'This sale cannot be refunded because it is already voided or refunded.',
+            ], 422);
+        }
+
+        $sale->refresh()->load('items');
 
         $restocked = [];
         $warnings = [];
@@ -390,6 +440,15 @@ class SaleController extends Controller
                     'quantity' => (float) $item->quantity,
                 ];
             } catch (\Throwable $e) {
+                // Restocking failed after the sale was already claimed as
+                // refunded — revert so it isn't stuck marked refunded
+                // with stock never actually restored.
+                Sale::where('id', $sale->id)->update([
+                    'status' => $originalStatus,
+                    'refund_reason' => null,
+                    'refunded_at' => null,
+                ]);
+
                 return response()->json([
                     'message' => 'Unable to restock inventory for this refund. The refund was not processed.',
                     'error' => $e->getMessage(),
@@ -398,12 +457,7 @@ class SaleController extends Controller
             }
         }
 
-        $sale->status = 'refunded';
-        $sale->refund_reason = trim((string) ($validated['reason'] ?? '')) !== '' ? $validated['reason'] : null;
-        $sale->refunded_at = now();
-        $sale->save();
-
-        $auditLogger->saleRefunded($sale, $sale->refund_reason);
+        $auditLogger->saleRefunded($sale, $refundReason);
 
         return response()->json([
             'message' => 'Sale refunded successfully.',

@@ -117,6 +117,15 @@ class PosAuditLogger
         ]);
     }
 
+    public function nameChangedBySelf(User $user, string $oldName, string $newName): void
+    {
+        Log::info('pos.account.name.changed_by_self', [
+            'user_id' => $user->id,
+            'old_name' => $oldName,
+            'new_name' => $newName,
+        ]);
+    }
+
     public function passwordChangedBySelf(User $user): void
     {
         Log::info('pos.account.password.changed_by_self', [

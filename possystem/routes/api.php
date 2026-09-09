@@ -19,6 +19,7 @@ Route::middleware('auth:sanctum')->group(function () {
         return $request->user();
     })->name('user');
 
+    Route::put('/account/name', [AccountController::class, 'updateName'])->name('account.name.update');
     Route::put('/account/email', [AccountController::class, 'updateEmail'])->name('account.email.update');
     Route::put('/account/password', [AccountController::class, 'updatePassword'])->name('account.password.update');
 
