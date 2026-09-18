@@ -77,6 +77,26 @@ class AccountController extends Controller
         ]);
     }
 
+    /**
+     * Lightweight check used for live inline feedback as the cashier types
+     * their current password (see the account page's blur handler) —
+     * doesn't change anything, just answers "is this correct?" so the UI
+     * can show an error before they've even finished filling out the rest
+     * of the form.
+     */
+    public function verifyCurrentPassword(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'current_password' => ['required', 'string'],
+        ]);
+
+        return response()->json([
+            'valid' => Hash::check($validated['current_password'], $user->password),
+        ]);
+    }
+
     public function updatePassword(Request $request): JsonResponse
     {
         $user = $request->user();

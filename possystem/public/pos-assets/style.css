@@ -276,7 +276,7 @@ display: none;
 to { transform: rotate(360deg); }
 }
 
-.login-panel .field-error {
+.field-error {
 margin: 6px 0 0;
 font-size: 12.5px;
 line-height: 1.4;
@@ -286,11 +286,11 @@ align-items: flex-start;
 gap: 6px;
 }
 
-.login-panel .field-error[hidden] {
+.field-error[hidden] {
 display: none;
 }
 
-.login-panel .field-error::before {
+.field-error::before {
 content: "!";
 flex: none;
 width: 15px;
@@ -304,11 +304,11 @@ line-height: 15px;
 text-align: center;
 }
 
-.login-panel input.field-invalid {
+input.field-invalid {
 border-color: #dc2626;
 }
 
-.login-panel input.field-invalid:focus {
+input.field-invalid:focus {
 box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15);
 }
 

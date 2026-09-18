@@ -456,31 +456,41 @@ const Pos = (function () {
     }
 
     async function bootstrap() {
-        try {
-            const locations = await apiFetch('/pos/locations');
-            state.configuredLocationId = locations.configured_location_id;
+        // These four don't depend on each other's results, so they're
+        // fired together instead of one after another — on a page that
+        // used to wait through 4+ sequential round-trips before showing
+        // anything, this alone cuts the "stuck on the loading spinner"
+        // time roughly to whichever single one of them is slowest, not
+        // the sum of all of them.
+        await Promise.allSettled([
+            (async function () {
+                try {
+                    const locations = await apiFetch('/pos/locations');
+                    state.configuredLocationId = locations.configured_location_id;
 
-            const current = (locations.data || []).find(function (l) {
-                return l.id === state.configuredLocationId;
-            });
+                    const current = (locations.data || []).find(function (l) {
+                        return l.id === state.configuredLocationId;
+                    });
 
-            state.locationName = current
-                ? current.name + (current.code ? ' (' + current.code + ')' : '')
-                : 'Location #' + state.configuredLocationId;
+                    state.locationName = current
+                        ? current.name + (current.code ? ' (' + current.code + ')' : '')
+                        : 'Location #' + state.configuredLocationId;
 
-            document.getElementById('location-badge').textContent = state.locationName;
-        } catch (err) {
-            showError('Unable to load POS location: ' + err.message);
-        }
-
-        try {
-            await refreshCashSession();
-        } catch (err) {
-            showError('Unable to load cash session: ' + err.message);
-        }
-
-        await loadProducts('');
-        await refreshReports();
+                    document.getElementById('location-badge').textContent = state.locationName;
+                } catch (err) {
+                    showError('Unable to load POS location: ' + err.message);
+                }
+            })(),
+            (async function () {
+                try {
+                    await refreshCashSession();
+                } catch (err) {
+                    showError('Unable to load cash session: ' + err.message);
+                }
+            })(),
+            loadProducts(''),
+            refreshReports(),
+        ]);
 
         document.getElementById('page-loader').hidden = true;
         document.getElementById('app').hidden = false;
@@ -594,24 +604,32 @@ const Pos = (function () {
     }
 
     async function managerBootstrap() {
-        try {
-            const locations = await apiFetch('/pos/locations');
-            const current = (locations.data || []).find(function (l) {
-                return l.id === locations.configured_location_id;
-            });
-
-            document.getElementById('location-badge').textContent = current
-                ? current.name + (current.code ? ' (' + current.code + ')' : '')
-                : 'Location #' + locations.configured_location_id;
-        } catch (err) {
-            showError('Unable to load POS location: ' + err.message);
-        }
-
         document.getElementById('report-date-input').value = todayDateString();
         document.getElementById('analytics-month-input').value = currentMonthString();
 
-        await refreshReports();
-        await loadProductAnalytics(currentMonthString());
+        // Location badge, the reports section, and the analytics section
+        // are all independent reads — fired together instead of one after
+        // another so the Manager Console (the heaviest page in the app)
+        // doesn't sit on its loading spinner for the sum of every section's
+        // load time.
+        await Promise.allSettled([
+            (async function () {
+                try {
+                    const locations = await apiFetch('/pos/locations');
+                    const current = (locations.data || []).find(function (l) {
+                        return l.id === locations.configured_location_id;
+                    });
+
+                    document.getElementById('location-badge').textContent = current
+                        ? current.name + (current.code ? ' (' + current.code + ')' : '')
+                        : 'Location #' + locations.configured_location_id;
+                } catch (err) {
+                    showError('Unable to load POS location: ' + err.message);
+                }
+            })(),
+            refreshReports(),
+            loadProductAnalytics(currentMonthString()),
+        ]);
 
         document.getElementById('page-loader').hidden = true;
         document.getElementById('app').hidden = false;
@@ -1213,9 +1231,16 @@ const Pos = (function () {
 
     async function refreshReports() {
         const date = getSelectedReportDate();
-        await loadStats(date);
-        await loadSales(date);
-        await loadRecentReceipts();
+
+        // Three independent reads (today's totals, the sales table, the
+        // recent-receipts list) — running them together instead of one
+        // after another is what actually shortens the wait, since none of
+        // them need each other's data.
+        await Promise.allSettled([
+            loadStats(date),
+            loadSales(date),
+            loadRecentReceipts(),
+        ]);
     }
 
     function todayDateString() {
@@ -1261,18 +1286,24 @@ const Pos = (function () {
 
         const range = monthDateRange(monthStr);
 
-        // Sales data and the live product catalog are fetched independently —
-        // the catalog call depends on the Inventory service being reachable,
-        // and its failure must not take down sales-based analytics (Top Sellers,
-        // Monthly Cashier Performance) that don't need it at all.
+        // Sales data and the live product catalog are fetched independently
+        // and in parallel — the catalog call depends on the Inventory
+        // service being reachable, and its failure must not take down
+        // sales-based analytics (Top Sellers, Monthly Cashier Performance)
+        // that don't need it at all. Firing both at once instead of one
+        // after another roughly halves this section's load time.
+        const [salesResult, productsResult] = await Promise.allSettled([
+            apiFetch('/sales?from=' + range.from + '&to=' + range.to + '&all=1'),
+            apiFetch('/pos/products?search='),
+        ]);
+
         let sales = [];
         let salesLoaded = false;
 
-        try {
-            const salesResponse = await apiFetch('/sales?from=' + range.from + '&to=' + range.to + '&all=1');
-            sales = salesResponse.data || [];
+        if (salesResult.status === 'fulfilled') {
+            sales = salesResult.value.data || [];
             salesLoaded = true;
-        } catch (err) {
+        } else {
             topList.innerHTML = '<div class="table-empty">Unable to load sales data.</div>';
         }
 
@@ -1305,11 +1336,10 @@ const Pos = (function () {
             }
         }
 
-        try {
-            const productsResponse = await apiFetch('/pos/products?search=');
-            state.productAnalyticsCatalog = productsResponse.data || [];
+        if (productsResult.status === 'fulfilled') {
+            state.productAnalyticsCatalog = productsResult.value.data || [];
             renderSlowProducts(sold, state.productAnalyticsCatalog);
-        } catch (err) {
+        } else {
             state.productAnalyticsCatalog = [];
             slowList.innerHTML = '<div class="table-empty">Unable to load the product catalog (is the Inventory service running?).</div>';
         }
@@ -2411,8 +2441,15 @@ const Pos = (function () {
         state.visibleProducts = pageProducts;
 
         pageProducts.forEach(function (product) {
+            // What's left to add, after subtracting whatever this cashier
+            // already has sitting in their own cart for this product —
+            // purely a display/cap adjustment, the real stock number in
+            // `product.stock_quantity` is untouched until checkout actually
+            // succeeds against the real database.
+            const displayStock = Math.max(0, product.stock_quantity - reservedBaseQuantity(product.id));
+
             const card = document.createElement('div');
-            card.className = 'product-card' + (product.stock_quantity <= 0 ? ' out-of-stock' : '');
+            card.className = 'product-card' + (displayStock <= 0 ? ' out-of-stock' : '');
 
             const units =
                 product.units && product.units.length
@@ -2454,8 +2491,8 @@ const Pos = (function () {
 
             const unitCode = product.base_unit ? product.base_unit.code : '';
             const stockBadge =
-                product.stock_quantity > 0
-                    ? '<span class="stock-badge">' + formatQty(product.stock_quantity) + ' ' + escapeHtml(unitCode) + ' in stock</span>'
+                displayStock > 0
+                    ? '<span class="stock-badge">' + formatQty(displayStock) + ' ' + escapeHtml(unitCode) + ' in stock</span>'
                     : '<span class="stock-badge out">Out of stock</span>';
 
             let otherLocationsHtml = '';
@@ -2509,9 +2546,9 @@ const Pos = (function () {
                 unitSelectHtml +
                 otherLocationsHtml +
                 '<button type="button" class="add-btn"' +
-                (product.stock_quantity <= 0 ? ' disabled' : '') +
+                (displayStock <= 0 ? ' disabled' : '') +
                 '>' +
-                (product.stock_quantity <= 0 ? 'Unavailable' : 'Add to cart') +
+                (displayStock <= 0 ? 'Unavailable' : 'Add to cart') +
                 '</button>';
 
             const toggleBtn = card.querySelector('.other-locations-toggle');
@@ -2541,16 +2578,38 @@ const Pos = (function () {
     }
 
     /*
+     * How many base units of `productId` are already sitting in the cart,
+     * across every line/unit for that product — e.g. 1 Box (of 12) plus 3
+     * loose Pieces already in the cart reserves 15 base units, even though
+     * they're two separate cart rows. This is what makes the product grid
+     * (and the cap on adding more) reflect what's already been picked,
+     * without ever touching the real stock number until checkout actually
+     * succeeds — purely a client-side "what's left to add" view.
+     */
+    function reservedBaseQuantity(productId) {
+        return state.cart.reduce(function (sum, item) {
+            if (item.product_id !== productId) {
+                return sum;
+            }
+
+            return sum + item.quantity * Number(item.conversion_factor || 1);
+        }, 0);
+    }
+
+    /*
      * How many of `unit` can actually be sold, given the product's base-unit
      * stock. A Box of 12 with 10 loose pieces in stock means 0 boxes
      * available, not 10 — always divide by the unit's own conversion
-     * factor, never assume it's 1.
+     * factor, never assume it's 1. `reservedBaseQty` subtracts whatever's
+     * already reserved by other cart lines for this same product first, so
+     * combining units (e.g. a Box already in cart, now adding Pieces) can
+     * never let the cashier queue up more than physically exists.
      */
-    function maxSellableQuantity(product, unit) {
+    function maxSellableQuantity(product, unit, reservedBaseQty) {
         const conversionFactor = Number(unit.conversion_factor || 1) || 1;
-        const baseStock = Number(product.stock_quantity || 0);
+        const baseStock = Number(product.stock_quantity || 0) - (reservedBaseQty || 0);
 
-        return Math.floor(baseStock / conversionFactor);
+        return Math.floor(Math.max(0, baseStock) / conversionFactor);
     }
 
     function defaultUnitFor(product) {
@@ -2612,16 +2671,24 @@ const Pos = (function () {
     }
 
     function addToCart(product, unit) {
-        const maxQty = maxSellableQuantity(product, unit);
+        const existing = state.cart.find(function (item) {
+            return item.product_id === product.id && item.product_unit_id === unit.id;
+        });
+
+        // Reserved by every OTHER cart line for this product (a Box already
+        // in cart counts against adding more loose Pieces, and vice versa).
+        // This line's own existing reservation is excluded here — its cap
+        // is already tracked separately via its own snapshotted
+        // max_quantity below, so subtracting it again here would double-count.
+        const reservedByOtherLines = reservedBaseQuantity(product.id)
+            - (existing ? existing.quantity * Number(existing.conversion_factor || 1) : 0);
+
+        const maxQty = maxSellableQuantity(product, unit, reservedByOtherLines);
 
         if (maxQty < 1) {
             showError('Not enough stock to add "' + product.name + '" (' + (unit.name || unit.code || 'unit') + ').');
             return;
         }
-
-        const existing = state.cart.find(function (item) {
-            return item.product_id === product.id && item.product_unit_id === unit.id;
-        });
 
         if (existing) {
             if (existing.quantity >= existing.max_quantity) {
@@ -2639,6 +2706,7 @@ const Pos = (function () {
                 name: product.name,
                 sku: product.sku,
                 unit_label: unit.name || unit.code || '',
+                conversion_factor: conversionFactor,
                 // selling_price is per base unit (e.g. per Piece) — scale it
                 // by the selected unit's conversion factor (e.g. x12 for a
                 // Box of 12) so a Box is priced as 12 pieces, not 1.
@@ -2757,6 +2825,11 @@ const Pos = (function () {
 
         renderCartTotals();
         document.getElementById('checkout-btn').disabled = state.cart.length === 0 || !state.cashSession;
+
+        // Reflect what's already in the cart back onto the product grid's
+        // stock badges (see displayStock in renderProducts) — purely a
+        // client-side view, nothing here touches the real stock number.
+        renderProducts();
     }
 
     let customerSuggestions = [];
@@ -3009,9 +3082,15 @@ const Pos = (function () {
             document.getElementById('discount-toggle-btn').hidden = false;
 
             renderCart();
-            await refreshCashSession();
-            await loadProducts(document.getElementById('search-input').value);
-            await refreshReports();
+
+            // Three independent post-sale refreshes (register balance,
+            // product stock, reports) — run together rather than one
+            // after another, since this happens after every single sale.
+            await Promise.allSettled([
+                refreshCashSession(),
+                loadProducts(document.getElementById('search-input').value),
+                refreshReports(),
+            ]);
 
             showSuccess('Sale ' + (sale && sale.sale_number ? sale.sale_number : '') + ' completed.');
         } catch (err) {
@@ -3201,8 +3280,70 @@ const Pos = (function () {
         document.getElementById('change-email-form').addEventListener('submit', updateOwnEmail);
         document.getElementById('change-password-form').addEventListener('submit', updateOwnPassword);
 
+        wireLiveCurrentPasswordCheck('current-password');
+        wireLiveCurrentPasswordCheck('email-current-password');
+
         document.getElementById('page-loader').hidden = true;
         document.getElementById('app').hidden = false;
+    }
+
+    /*
+     * Checks a "current password" field against the server as soon as the
+     * cashier leaves it (blur), instead of only finding out after
+     * submitting the whole form — mirrors the live feedback the login
+     * page already gives for a malformed email. Unlike the email check,
+     * this can't be done purely in the browser (only the server has the
+     * real password to compare against), so it's one small background
+     * request per blur, not a per-keystroke check.
+     */
+    function wireLiveCurrentPasswordCheck(inputId) {
+        const input = document.getElementById(inputId);
+        if (!input) return;
+
+        let requestToken = 0;
+
+        input.addEventListener('blur', function () {
+            const value = input.value;
+
+            if (!value) {
+                return;
+            }
+
+            const thisRequest = ++requestToken;
+
+            apiFetch('/account/verify-current-password', {
+                method: 'POST',
+                body: JSON.stringify({ current_password: value }),
+            })
+                .then(function (response) {
+                    // A newer request (or a later successful password
+                    // change) has already superseded this one — its
+                    // answer is stale, don't act on it.
+                    if (thisRequest !== requestToken || input.value !== value) {
+                        return;
+                    }
+
+                    if (response.valid) {
+                        clearFieldErrors([inputId]);
+                    } else {
+                        showFieldError(inputId, 'That password doesn\'t match your current one.');
+                    }
+                })
+                .catch(function () {
+                    // Network hiccup etc. — say nothing rather than falsely
+                    // flag a correct password as wrong; the real check on
+                    // submit still catches an actually-wrong password.
+                });
+        });
+
+        // Once a live error has been shown, don't leave it stuck on screen
+        // while the cashier is actively retyping — it re-checks on the
+        // next blur anyway.
+        input.addEventListener('input', function () {
+            if (input.classList.contains('field-invalid')) {
+                clearFieldErrors([inputId]);
+            }
+        });
     }
 
     function capitalize(value) {
@@ -3255,6 +3396,28 @@ const Pos = (function () {
         }
     }
 
+    function clearFieldErrors(ids) {
+        ids.forEach(function (id) {
+            const input = document.getElementById(id);
+            const errorEl = document.getElementById(id + '-error');
+            if (input) input.classList.remove('field-invalid');
+            if (errorEl) {
+                errorEl.hidden = true;
+                errorEl.textContent = '';
+            }
+        });
+    }
+
+    function showFieldError(id, message) {
+        const input = document.getElementById(id);
+        const errorEl = document.getElementById(id + '-error');
+        if (input) input.classList.add('field-invalid');
+        if (errorEl) {
+            errorEl.textContent = message;
+            errorEl.hidden = false;
+        }
+    }
+
     async function updateOwnEmail(e) {
         e.preventDefault();
 
@@ -3262,14 +3425,34 @@ const Pos = (function () {
         const successBox = document.getElementById('email-form-success');
         errorBox.hidden = true;
         successBox.hidden = true;
+        clearFieldErrors(['new-email', 'email-current-password']);
+
+        const email = document.getElementById('new-email').value;
+        const currentPassword = document.getElementById('email-current-password').value;
+
+        let hasClientError = false;
+
+        if (!email) {
+            showFieldError('new-email', 'Please enter an email address.');
+            hasClientError = true;
+        }
+
+        if (!currentPassword) {
+            showFieldError('email-current-password', 'Please enter your current password.');
+            hasClientError = true;
+        }
+
+        if (hasClientError) {
+            return;
+        }
 
         const submitBtn = e.target.querySelector('button[type="submit"]');
         submitBtn.disabled = true;
         submitBtn.classList.add('is-loading');
 
         const payload = {
-            email: document.getElementById('new-email').value,
-            current_password: document.getElementById('email-current-password').value,
+            email: email,
+            current_password: currentPassword,
         };
 
         try {
@@ -3290,8 +3473,16 @@ const Pos = (function () {
             successBox.textContent = response.message || 'Email updated.';
             successBox.hidden = false;
         } catch (err) {
-            errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
-            errorBox.hidden = false;
+            const message = err.data && err.data.message ? err.data.message : err.message;
+
+            if (err.status === 422 && /current password is incorrect/i.test(message)) {
+                showFieldError('email-current-password', message);
+            } else if (err.status === 422 && /email/i.test(message)) {
+                showFieldError('new-email', message);
+            } else {
+                errorBox.textContent = message;
+                errorBox.hidden = false;
+            }
         } finally {
             submitBtn.disabled = false;
             submitBtn.classList.remove('is-loading');
@@ -3305,13 +3496,40 @@ const Pos = (function () {
         const successBox = document.getElementById('password-form-success');
         errorBox.hidden = true;
         successBox.hidden = true;
+        clearFieldErrors(['current-password', 'new-password', 'new-password-confirmation']);
 
-        const newPassword = document.getElementById('new-password').value;
-        const confirmPassword = document.getElementById('new-password-confirmation').value;
+        const currentPasswordInput = document.getElementById('current-password');
+        const newPasswordInput = document.getElementById('new-password');
+        const confirmInput = document.getElementById('new-password-confirmation');
 
-        if (newPassword !== confirmPassword) {
-            errorBox.textContent = 'New password and confirmation do not match.';
-            errorBox.hidden = false;
+        const currentPassword = currentPasswordInput.value;
+        const newPassword = newPasswordInput.value;
+        const confirmPassword = confirmInput.value;
+
+        // Check every field up front so a cashier sees all their mistakes
+        // at once (e.g. a blank current password AND a short new one)
+        // instead of fixing them one submit at a time.
+        let hasClientError = false;
+
+        if (!currentPassword) {
+            showFieldError('current-password', 'Please enter your current password.');
+            hasClientError = true;
+        }
+
+        if (!newPassword) {
+            showFieldError('new-password', 'Please enter a new password.');
+            hasClientError = true;
+        } else if (newPassword.length < 8) {
+            showFieldError('new-password', 'Password must be at least 8 characters.');
+            hasClientError = true;
+        }
+
+        if (newPassword && confirmPassword && newPassword !== confirmPassword) {
+            showFieldError('new-password-confirmation', 'Passwords do not match.');
+            hasClientError = true;
+        }
+
+        if (hasClientError) {
             return;
         }
 
@@ -3320,7 +3538,7 @@ const Pos = (function () {
         submitBtn.classList.add('is-loading');
 
         const payload = {
-            current_password: document.getElementById('current-password').value,
+            current_password: currentPassword,
             password: newPassword,
             password_confirmation: confirmPassword,
         };
@@ -3349,8 +3567,17 @@ const Pos = (function () {
                 }, 1200);
             }
         } catch (err) {
-            errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
-            errorBox.hidden = false;
+            const message = err.data && err.data.message ? err.data.message : err.message;
+
+            // The one server-side check that maps cleanly to a specific
+            // field — point the error at Current Password instead of a
+            // generic banner the cashier has to puzzle out.
+            if (err.status === 422 && /current password is incorrect/i.test(message)) {
+                showFieldError('current-password', message);
+            } else {
+                errorBox.textContent = message;
+                errorBox.hidden = false;
+            }
         } finally {
             submitBtn.disabled = false;
             submitBtn.classList.remove('is-loading');

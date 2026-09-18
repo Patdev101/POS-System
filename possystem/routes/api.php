@@ -25,6 +25,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/account/name', [AccountController::class, 'updateName'])->name('account.name.update');
     Route::put('/account/email', [AccountController::class, 'updateEmail'])->name('account.email.update');
     Route::put('/account/password', [AccountController::class, 'updatePassword'])->name('account.password.update');
+    Route::post('/account/verify-current-password', [AccountController::class, 'verifyCurrentPassword'])
+        ->middleware('throttle:20,1')
+        ->name('account.verify-current-password');
 
     Route::post('/pos/checkout', [PosCheckoutController::class, 'store']);
     Route::get('/sales', [SaleController::class, 'index']);

@@ -73,16 +73,18 @@
 
                 <hr class="account-divider">
 
-                <form id="change-email-form" class="account-form">
+                <form id="change-email-form" class="account-form" novalidate>
                     <div class="account-form-row">
                         <div class="account-field">
                             <label for="new-email">Email Address</label>
                             <input type="email" id="new-email" required>
+                            <p class="field-error" id="new-email-error" hidden></p>
                         </div>
 
                         <div class="account-field">
                             <label for="email-current-password">Confirm with your current password</label>
                             <input type="password" id="email-current-password" required placeholder="••••••••">
+                            <p class="field-error" id="email-current-password-error" hidden></p>
                         </div>
 
                         <button type="submit" class="secondary-btn">Save Email</button>
@@ -101,21 +103,24 @@
             </div>
 
             <div class="table-card account-form-card">
-                <form id="change-password-form" class="account-form">
+                <form id="change-password-form" class="account-form" novalidate>
                     <div class="account-form-row">
                         <div class="account-field">
                             <label for="current-password">Current Password</label>
                             <input type="password" id="current-password" required placeholder="••••••••">
+                            <p class="field-error" id="current-password-error" hidden></p>
                         </div>
 
                         <div class="account-field">
                             <label for="new-password">New Password</label>
                             <input type="password" id="new-password" minlength="8" required placeholder="Min. 8 characters">
+                            <p class="field-error" id="new-password-error" hidden></p>
                         </div>
 
                         <div class="account-field">
                             <label for="new-password-confirmation">Confirm New Password</label>
                             <input type="password" id="new-password-confirmation" minlength="8" required placeholder="••••••••">
+                            <p class="field-error" id="new-password-confirmation-error" hidden></p>
                         </div>
                     </div>
 
