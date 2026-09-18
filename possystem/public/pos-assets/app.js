@@ -752,6 +752,115 @@ const Pos = (function () {
         }
     }
 
+    /*
+     * Human-readable label for the event-type badge. Falls back to the raw
+     * event key for anything not in this list (e.g. a new event type added
+     * later and not yet mapped here) so nothing silently disappears.
+     */
+    function auditEventLabel(event) {
+        const labels = {
+            'pos.checkout.started': 'Checkout Started',
+            'pos.checkout.completed': 'Sale Completed',
+            'pos.checkout.failed': 'Checkout Failed',
+            'pos.inventory.rollback': 'Stock Restored',
+            'pos.sale.voided': 'Sale Voided',
+            'pos.sale.refunded': 'Sale Refunded',
+            'pos.cash_session.opened': 'Register Opened',
+            'pos.cash_session.closed': 'Register Closed',
+            'pos.account.email.changed_by_self': 'Changed Own Email',
+            'pos.account.name.changed_by_self': 'Changed Own Name',
+            'pos.account.password.changed_by_self': 'Changed Own Password',
+            'pos.account.email.changed_by_admin': 'Email Changed by Admin',
+            'pos.account.role.changed_by_admin': 'Role Changed',
+            'pos.account.status.changed_by_admin': 'Account Status Changed',
+            'pos.account.password.reset_by_admin': 'Password Reset by Admin',
+            'pos.account.password.reset_via_email_link': 'Password Reset by Email',
+        };
+
+        return labels[event] || event;
+    }
+
+    /*
+     * Turns the raw JSON `context` (meant for developers debugging the log
+     * file) into a plain sentence a manager can read without knowing what
+     * a JSON object is. One case per event type logged by PosAuditLogger —
+     * anything not covered here falls back to the raw JSON rather than
+     * showing nothing.
+     */
+    function describeAuditEvent(entry) {
+        const c = entry.context || {};
+
+        switch (entry.event) {
+            case 'pos.checkout.started':
+                return 'Started a checkout' +
+                    (c.items_count ? ' with ' + c.items_count + ' item(s)' : '') +
+                    (c.payment_method ? ', paying by ' + c.payment_method : '') + '.';
+
+            case 'pos.checkout.completed':
+                return 'Completed sale ' + (c.sale_number || '') + ' totaling ' + money(c.total) +
+                    (c.payment_method ? ' (' + c.payment_method + ')' : '') + '.';
+
+            case 'pos.checkout.failed':
+                return 'A checkout attempt failed' + (c.message ? ': ' + c.message : '') + '.';
+
+            case 'pos.inventory.rollback':
+                return 'Stock was put back after a failed checkout' +
+                    (c.reason ? ' (' + c.reason + ')' : '') + '.';
+
+            case 'pos.sale.voided':
+                return 'Voided sale ' + (c.sale_number || '') +
+                    (c.reason ? ' — reason given: "' + c.reason + '"' : ' — no reason given') + '.';
+
+            case 'pos.sale.refunded':
+                return 'Refunded sale ' + (c.sale_number || '') +
+                    (c.reason ? ' — reason given: "' + c.reason + '"' : ' — no reason given') + '.';
+
+            case 'pos.cash_session.opened':
+                return 'Opened the register with ' + money(c.opening_cash) + ' starting cash.';
+
+            case 'pos.cash_session.closed': {
+                let text = 'Closed the register. Expected ' + money(c.expected_cash) +
+                    ', counted ' + money(c.actual_cash) + ' (' +
+                    (Number(c.variance) === 0 ? 'exactly matched' : (Number(c.variance) > 0 ? 'over by ' + money(Math.abs(c.variance)) : 'short by ' + money(Math.abs(c.variance)))) +
+                    ').';
+
+                if (c.variance_approved_by_email) {
+                    text += ' A manager (' + c.variance_approved_by_email + ') approved this because of the mismatch.';
+                }
+
+                return text;
+            }
+
+            case 'pos.account.email.changed_by_self':
+                return 'Changed their own email from ' + (c.old_email || 'unknown') + ' to ' + (c.new_email || 'unknown') + '.';
+
+            case 'pos.account.name.changed_by_self':
+                return 'Changed their own display name from "' + (c.old_name || 'unknown') + '" to "' + (c.new_name || 'unknown') + '".';
+
+            case 'pos.account.password.changed_by_self':
+                return 'Changed their own password.';
+
+            case 'pos.account.email.changed_by_admin':
+                return 'Changed another user\'s email from ' + (c.old_email || 'unknown') + ' to ' + (c.new_email || 'unknown') + '.';
+
+            case 'pos.account.role.changed_by_admin':
+                return 'Changed ' + (c.target_email || 'a user') + '\'s role from ' + (c.old_role || 'unknown') + ' to ' + (c.new_role || 'unknown') + '.';
+
+            case 'pos.account.status.changed_by_admin':
+                return (c.is_active ? 'Reactivated' : 'Deactivated') + ' the account for ' + (c.target_email || 'a user') + '.';
+
+            case 'pos.account.password.reset_by_admin':
+                return 'Reset the password for ' + (c.target_email || 'a user') +
+                    (c.must_change_password ? ', and required them to set a new one on next login' : '') + '.';
+
+            case 'pos.account.password.reset_via_email_link':
+                return 'Reset their own password using the link emailed to them.';
+
+            default:
+                return entry.context ? JSON.stringify(entry.context) : '';
+        }
+    }
+
     function renderAuditLogTable(entries) {
         const tbody = document.getElementById('audit-log-table-body');
         tbody.innerHTML = '';
@@ -765,13 +874,20 @@ const Pos = (function () {
             const row = document.createElement('tr');
             const when = entry.created_at ? new Date(entry.created_at).toLocaleString() : '—';
             const who = entry.user ? escapeHtml(entry.user.name) + ' (' + escapeHtml(entry.user.email) + ')' : '—';
-            const context = entry.context ? escapeHtml(JSON.stringify(entry.context)) : '';
+            const description = escapeHtml(describeAuditEvent(entry));
+            const rawJson = entry.context ? escapeHtml(JSON.stringify(entry.context, null, 2)) : '';
 
             row.innerHTML =
                 '<td>' + when + '</td>' +
-                '<td><span class="role-badge">' + escapeHtml(entry.event) + '</span></td>' +
+                '<td><span class="role-badge" title="' + escapeHtml(entry.event) + '">' + escapeHtml(auditEventLabel(entry.event)) + '</span></td>' +
                 '<td>' + who + '</td>' +
-                '<td style="max-width:420px;overflow-wrap:anywhere;font-size:12px;color:#64748b;">' + context + '</td>';
+                '<td style="max-width:420px;white-space:normal;overflow-wrap:anywhere;font-size:13px;color:#374151;">' +
+                description +
+                (rawJson
+                    ? '<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;color:#94a3b8;">Technical details</summary>' +
+                      '<pre style="white-space:pre-wrap;font-size:11px;color:#64748b;margin:6px 0 0;">' + rawJson + '</pre></details>'
+                    : '') +
+                '</td>';
 
             tbody.appendChild(row);
         });

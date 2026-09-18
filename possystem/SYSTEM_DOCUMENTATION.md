@@ -5,9 +5,107 @@
 **Database:** SQLite (local), shared inventory environment
 **Project path:** `possystem/` (this repo)
 **Runs on:** `http://127.0.0.1:8002` in this dev environment (not the Laravel default 8000 — check `php artisan serve --port=` before assuming the port)
-**Documentation date:** 2026-09-18, round 4 (updated again — real self-service email password reset (verified end-to-end via Mailpit), a `pos:create-admin` command for clean turnover to the real business (see §13.1), and a My Account page UI/UX pass shipped; see the bottom of §0. Also covers an experimental WebUSB/ESC-POS print path, a mobile-layout audit (including a real stat-cards bug caught by live device-toolbar testing), manager-approval gate on large cash variance, an inventory-outage banner with auto-retry (plus a real CSS bug found and fixed in it — see §9), thermal-paper-sized print CSS, and unit-of-measure labels on receipts from earlier the same day, login rate-limiting, DB-backed audit log UI, receipt branding, barcode scan-to-add, and CSV export from earlier still, and §14 for everything shipped since 2026-09-03; the rest of this file is otherwise unchanged and still accurate)
+**Documentation date:** 2026-09-18, round 5 (updated again — Audit Log "Details" column translated from raw JSON into plain-English sentences for non-technical managers, see the bottom of §0. Also round 4: real self-service email password reset (verified end-to-end via Mailpit), a `pos:create-admin` command for clean turnover to the real business (see §13.1), and a My Account page UI/UX pass. Also covers an experimental WebUSB/ESC-POS print path, a mobile-layout audit (including a real stat-cards bug caught by live device-toolbar testing), manager-approval gate on large cash variance, an inventory-outage banner with auto-retry (plus a real CSS bug found and fixed in it — see §9), thermal-paper-sized print CSS, and unit-of-measure labels on receipts from earlier the same day, login rate-limiting, DB-backed audit log UI, receipt branding, barcode scan-to-add, and CSV export from earlier still, and §14 for everything shipped since 2026-09-03; the rest of this file is otherwise unchanged and still accurate)
 
 This file is the canonical, up-to-date reference for this project. If another AI or developer picks this up later, read this file first before making UI or backend changes — several bugs were introduced in earlier sessions by not doing that. All other project `.md` files (worklist/guide/status/progress docs) have been deleted as stale duplicates — this is now the only documentation file besides `README.md`, and it should be kept updated going forward instead of spawning new doc files.
+
+---
+
+## Setting This Up for the First Time? Read This First
+
+**If you're the business receiving this project (not the intern who built it), start here — this is a one-time setup, not something you need the rest of this document for yet.**
+
+This project was built by an intern, not an employee — the dev database (both POS's SQLite file and Inventory's SQL Server DB) contains seeded demo data and demo accounts (`cashier@shogun.local` / `manager@shogun.local` / `admin@shogun.local`, all password `password123`). **None of that should ship to the real deployment.** Handing over the populated database file/backup would mean handing over an intern's test data and a set of publicly-known demo passwords baked into a real business system.
+
+**What to hand over: the code folders only — not the database, not `.env`, not `vendor/`/`node_modules/`.**
+
+- ✅ Send: the `POS-System` and `Inventory-System` project folders (which include `.env.production` and `.env.example`), and this documentation.
+- ❌ Don't send: `.env` (dev secrets), the SQLite file / any SQL Server backup (demo data + demo passwords), `vendor/`, `node_modules/`, or anything in `storage/logs/`.
+
+### Two starting templates — which one to use
+
+Both apps ship two `.env` templates, and it matters which one you copy from:
+
+- **`.env.production`** — the one to use for a real deployment. Already tuned with production-safe defaults (`APP_DEBUG=false`, error-level logging instead of noisy debug logging) and has `# TODO:` comments marking every value that genuinely needs to be filled in for your setup (server URL, database credentials, a fresh API token, real mail credentials). **Start here.**
+- **`.env.example`** — Laravel's plain default template, tuned for local development (`APP_DEBUG=true`, verbose logging). Only use this if you're setting up a dev/test copy of the app, not a real deployment.
+
+Neither file contains real secrets — both are safe to send along with the code.
+
+### Setup tutorial (run once, per app, on the real server)
+
+Repeat these steps twice — once inside `POS-System/possystem`, once inside `Inventory-System/inventory`. Wherever a step differs between the two, both versions are given.
+
+**1. Install dependencies**
+
+```
+composer install
+```
+
+**2. Create your own `.env`**
+
+Copy the production template and open it in a text editor:
+
+```
+copy .env.production .env
+```
+
+Work through every line marked `# TODO:` in the file — at minimum:
+- Your real database connection details (`DB_CONNECTION`, `DB_DATABASE`, `DB_HOST`, `DB_USERNAME`, `DB_PASSWORD`) — a fresh, empty database, not a copy of the intern's.
+- `APP_URL` — the real address this app will be reached at (currently a placeholder, `http://CHANGE-ME` — a wrong value here breaks password-reset email links).
+- `INVENTORY_API_TOKEN` — generate one random value (e.g. run `php artisan tinker --execute="echo bin2hex(random_bytes(32));"` once) and paste the **exact same value** into both apps' `.env` files. This is how POS and Inventory authenticate to each other; if these two values don't match, POS will show "Unable to reach the inventory service" everywhere even though Inventory is actually running.
+- Mail settings (`MAIL_MAILER`, `MAIL_HOST`, etc.) if you want the "forgot password" feature to actually send email — otherwise it still points at a local test-mail catcher that won't reach anyone. See "Which mail service should I use?" below if you're not sure.
+
+`APP_DEBUG=false` is already set correctly in this template — leave it that way. (Turning it `true` shows visitors a full error/stack-trace page on any failure — never do that on a real deployment.)
+
+Then generate the app's encryption key (leave `APP_KEY` blank first, this fills it in):
+
+```
+php artisan key:generate
+```
+
+**3. Create the database tables (empty — no demo data)**
+
+```
+php artisan migrate
+```
+
+**Do not** run `php artisan migrate --seed` or anything mentioning `DatabaseSeeder` — that's what creates the demo accounts and fake products, and it's for the intern's own testing only.
+
+**4. Create your real first admin account**
+
+- In POS: `php artisan pos:create-admin`
+- In Inventory: `php artisan inventory:create-admin`
+
+Both prompt interactively for a name, email, and password — nothing is typed as a command-line argument, so it never ends up saved in shell history. (If your terminal can't hide the password as you type, it'll say so and let you type it visibly instead — that's expected on some Windows terminals, not a bug.)
+
+That one account can then create every other account (managers, cashiers/staff) from inside the app itself — **Manage Users** in POS, **User Management** in Inventory. No more command-line steps are needed after this.
+
+**5. Start the apps and sign in**
+
+```
+php artisan serve --port=8002   (for POS)
+php artisan serve --port=8001   (for Inventory)
+```
+
+(Use whatever ports/hosting setup your actual server needs — `php artisan serve` is fine for a quick local test, but a real production deployment should run behind a proper web server like Nginx or IIS, not this built-in dev server.)
+
+Sign in at `/pos/login` (POS) or `/login` (Inventory) with the admin account from step 4.
+
+**If something doesn't work:** the single most common cause is a value in `.env` that still says `localhost`, `127.0.0.1`, or the intern's port numbers — check `APP_URL` and `INVENTORY_API_TOKEN` first (§13's Quick Reference further down lists the other common gotchas: matching tokens, `config:clear` after any `.env` change, and timezone).
+
+This keeps the actual employees as the only people who ever know the real admin credentials — the intern's dev environment and the production one never share data or secrets.
+
+### Which mail service should I use? (for the "forgot password" email)
+
+You don't need anything fancy — pick whichever of these matches what you already have, in order of "least new signup required":
+
+1. **No new signup — use email you already have.** If the company already has any Gmail or Google Workspace account (or business email through a web host/Microsoft 365), use it directly via SMTP with an "App Password" (a special password just for this, not the real login password — requires 2-Step Verification turned on, generated at myaccount.google.com → Security → App Passwords). Set `MAIL_HOST=smtp.gmail.com`, `MAIL_PORT=587`, `MAIL_USERNAME=<the email>`, `MAIL_PASSWORD=<the app password>`. **Limitation:** roughly 500 emails/day cap, and can get flagged if sending looks automated at real volume — fine for password resets at a small team's scale, not something to scale on.
+2. **A free transactional email service**, if you want something built to scale later without hitting that cap: **Resend** (resend.com — free account, generate an API key under API Keys, then use `MAIL_HOST=smtp.resend.com`, `MAIL_PORT=587`, `MAIL_USERNAME=resend`, `MAIL_PASSWORD=<the API key>`) is the simplest to set up. Brevo and Mailgun are solid alternatives if you'd rather use one of those.
+3. **Skip real email for now.** Leave `MAIL_MAILER=log` — "forgot password" requests just get written to the log file instead of emailed. Not self-service for the end user, but zero setup. A manager/admin can still reset anyone's password directly from Manage Users (POS) / User Management (Inventory) regardless of this setting.
+
+Either way, both `INVENTORY_API_TOKEN` accuracy and this mail setting are the two `.env` values most likely to look "broken" if skipped — the rest of the app works fine without email configured, it just falls back to admin-driven resets.
+
+**Already set up, and want to understand how the system works or what's been built?** Keep reading below — §0 is where the technical documentation starts.
 
 ---
 
@@ -56,6 +154,7 @@ Cashier console: `http://127.0.0.1:8002/pos` (port may differ — check which po
 - **`pos:create-admin` command + turnover documentation** — see §13.1. An interactive artisan command (name/email/password prompted, never passed as command-line arguments) creates a real first admin account, so handing this project over to the actual business never requires sharing the intern's dev database or its known demo passwords.
 - **My Account page UI/UX pass** — the page previously showed plain unstyled text ("Name: -", "Role: -") and had three separate forms with no loading feedback on Save (unlike checkout/void/refund elsewhere in the app), plus the same success-banner styling copy-pasted inline three times. Redesigned: a proper account summary card (avatar initial, name, email, a real `.role-badge` matching the one already used in Manage Users instead of raw text), the Change Name field made more compact (inline label + button), and all three forms (`updateOwnName`/`updateOwnEmail`/`updateOwnPassword`) now use the same `.is-loading` button-spinner treatment as the rest of the app. Inline styles replaced with a new shared `.modal-success` class (mirroring the existing `.modal-error`).
 - **Self-service password reset via email** — real implementation, not the admin-assisted stopgap the forgot-password page previously described. New `PasswordResetController` (`GET/POST /pos/forgot-password`, `GET /pos/reset-password/{token}`, `POST /pos/reset-password`) uses Laravel's built-in `Password` broker and `password_reset_tokens` table (already present from the default migration) — no custom notification class needed since a route named `password.reset` now exists for Laravel's default `ResetPassword` notification to link to. `.env`'s `MAIL_MAILER`/`MAIL_HOST`/`MAIL_PORT` now point at the same local Mailpit instance (`127.0.0.1:1025`) Inventory already uses for dev/test email, so both apps' test emails land in the same inbox (`http://127.0.0.1:8025`). **Two real bugs caught during end-to-end testing, not assumed fixed:** (1) an early draft passed a no-op closure to `sendResetLink()`, not realizing that argument *replaces* Laravel's default "send the notification" step rather than running alongside it — no email was actually being sent until this was removed; (2) `APP_URL` in `.env` was still Laravel's default `http://localhost:8000`, so the generated reset link pointed at the wrong host/port entirely (this app actually runs on `127.0.0.1:8002`) — fixed. Verified for real: submitted the form → real email appeared in Mailpit with a working link → visited the link → submitted a new password → logged in successfully with it → reset the demo cashier account back to `password123` afterward. On successful reset, all of that user's existing Sanctum tokens are revoked (same as an admin-driven reset), and the event is recorded in the audit log (`pos.account.password.reset_via_email_link`).
+- **Audit Log "Details" column translated into plain English** — the column previously showed the raw JSON `context` object (e.g. `{"cash_session_id":10,"expected_cash":43.75,...}`), which is unreadable for a non-technical manager. Added `describeAuditEvent()` in `app.js`, one case per event type `PosAuditLogger` actually logs (checkout started/completed/failed, void, refund, register opened/closed with variance and approving-manager email, and every account-management event), producing a real sentence instead (e.g. "Closed the register. Expected ₱43.75, counted ₱43.75 (exactly matched)."). The event-type badge itself is also relabeled (`pos.cash_session.closed` → "Register Closed"). The raw JSON is kept, not deleted — it's tucked behind a collapsed "Technical details" `<details>` toggle per row for anyone who does want it. Verified against real logged events from this session's own testing, not synthetic examples.
 
 ### ❌ Known gaps — real work still to do (see §10 for the full prioritized list, and below for gaps found while writing this update that weren't previously documented)
 
@@ -327,77 +426,9 @@ A "delete this account" button was requested for resigned employees. **Checked b
 - `config('app.timezone')` must match the shop's real timezone, or "today" in reports/stats will be wrong.
 - Before assuming something is broken, hard-check whether it's actually a stale-cache issue (asset `?v=` busting should prevent this now) versus a real bug.
 
-### 13.1 Turnover to the Real Business (added 2026-09-18)
+### 13.1 Turnover to the Real Business
 
-This project was built by an intern, not an employee — the dev database (both POS's SQLite file and Inventory's SQL Server DB) contains seeded demo data and demo accounts (`cashier@shogun.local` / `manager@shogun.local` / `admin@shogun.local`, all password `password123`). **None of that should ship to the real deployment.** Handing over the populated database file/backup would mean handing over an intern's test data and a set of publicly-known demo passwords baked into a real business system.
-
-**What to hand over: the code folders only — not the database, not `.env`, not `vendor/`/`node_modules/`.**
-
-- ✅ Send: the `POS-System` and `Inventory-System` project folders, their `.env.example` files, and this documentation.
-- ❌ Don't send: `.env` (dev secrets), the SQLite file / any SQL Server backup (demo data + demo passwords), `vendor/`, `node_modules/`, or anything in `storage/logs/`.
-
-#### Setup tutorial for whoever receives this (run once, per app, on the real server)
-
-Repeat these steps twice — once inside `POS-System/possystem`, once inside `Inventory-System/inventory`. Wherever a step differs between the two, both versions are given.
-
-**1. Install dependencies**
-
-```
-composer install
-```
-
-**2. Create your own `.env`**
-
-Copy the example file and open it in a text editor:
-
-```
-copy .env.example .env
-```
-
-Fill in (at minimum):
-- Your real database connection details (`DB_CONNECTION`, `DB_DATABASE`, `DB_HOST`, `DB_USERNAME`, `DB_PASSWORD`) — a fresh, empty database, not a copy of the intern's.
-- `APP_URL` — the real address this app will be reached at (not `localhost:8000` — a wrong value here breaks password-reset email links, see §0).
-- `APP_DEBUG=false` — must be `false` before this is reachable by anyone other than you. Leaving it `true` shows visitors a full error/stack-trace page on any failure.
-- `INVENTORY_API_TOKEN` — generate one random value (e.g. run `php artisan tinker --execute="echo bin2hex(random_bytes(32));"` once) and paste the **exact same value** into both apps' `.env` files. This is how POS and Inventory authenticate to each other; if these two values don't match, POS will show "Unable to reach the inventory service" everywhere even though Inventory is actually running.
-- Mail settings (`MAIL_MAILER`, `MAIL_HOST`, etc.) if you want the "forgot password" feature to actually send email — otherwise leave `MAIL_MAILER=log` and reset requests just get logged instead of emailed, which is fine for launch and can be revisited later.
-
-Then generate the app's encryption key:
-
-```
-php artisan key:generate
-```
-
-**3. Create the database tables (empty — no demo data)**
-
-```
-php artisan migrate
-```
-
-**Do not** run `php artisan migrate --seed` or anything mentioning `DatabaseSeeder` — that's what creates the demo accounts and fake products, and it's for the intern's own testing only.
-
-**4. Create your real first admin account**
-
-- In POS: `php artisan pos:create-admin`
-- In Inventory: `php artisan inventory:create-admin`
-
-Both prompt interactively for a name, email, and password — nothing is typed as a command-line argument, so it never ends up saved in shell history. (If your terminal can't hide the password as you type, it'll say so and let you type it visibly instead — that's expected on some Windows terminals, not a bug.)
-
-That one account can then create every other account (managers, cashiers/staff) from inside the app itself — **Manage Users** in POS, **User Management** in Inventory. No more command-line steps are needed after this.
-
-**5. Start the apps and sign in**
-
-```
-php artisan serve --port=8002   (for POS)
-php artisan serve --port=8001   (for Inventory)
-```
-
-(Use whatever ports/hosting setup your actual server needs — `php artisan serve` is fine for a quick local test, but a real production deployment should run behind a proper web server like Nginx or IIS, not this built-in dev server.)
-
-Sign in at `/pos/login` (POS) or `/login` (Inventory) with the admin account from step 4.
-
-**If something doesn't work:** the single most common cause is a value in `.env` that still says `localhost`, `127.0.0.1`, or the intern's port numbers — check `APP_URL` and `INVENTORY_API_TOKEN` first (§13's Quick Reference above lists the other common gotchas: matching tokens, `config:clear` after any `.env` change, and timezone).
-
-This keeps the actual employees as the only people who ever know the real admin credentials — the intern's dev environment and the production one never share data or secrets.
+**Moved to the top of this document** — see "Setting This Up for the First Time? Read This First", right after the title/metadata block. It covers what to hand over (code only, never the dev database), and the full setup tutorial (`composer install` → `.env` → `migrate` → `pos:create-admin`/`inventory:create-admin` → sign in).
 
 ## 14. Shipped Since 2026-09-03 (UX pass, 2026-09-09)
 
