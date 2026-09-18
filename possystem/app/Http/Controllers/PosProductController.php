@@ -28,9 +28,11 @@ class PosProductController extends Controller
                 return $collection->filter(function (array $product) use ($searchTerm) {
                     $name = strtolower((string) ($product['name'] ?? ''));
                     $sku = strtolower((string) ($product['sku'] ?? ''));
+                    $barcode = strtolower((string) ($product['barcode'] ?? ''));
 
                     return str_contains($name, $searchTerm)
-                        || str_contains($sku, $searchTerm);
+                        || str_contains($sku, $searchTerm)
+                        || str_contains($barcode, $searchTerm);
                 });
             })
             ->values();
@@ -130,6 +132,7 @@ class PosProductController extends Controller
             'id' => (int) ($product['id'] ?? 0),
             'name' => $product['name'] ?? null,
             'sku' => $product['sku'] ?? null,
+            'barcode' => $product['barcode'] ?? null,
             'image_url' => $product['image_url'] ?? null,
             'selling_price' => (float) ($product['selling_price'] ?? 0),
             'is_active' => (bool) ($product['is_active'] ?? false),

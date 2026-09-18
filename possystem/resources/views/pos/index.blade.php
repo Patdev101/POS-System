@@ -79,12 +79,18 @@
 
                 <p class="section-eyebrow">Products</p>
 
+                <div id="inventory-offline-banner" class="inventory-offline-banner" hidden>
+                    <span class="status-dot offline"></span>
+                    <span>Can't reach the inventory service — product data may be stale. Retrying automatically…</span>
+                    <button type="button" id="inventory-offline-retry-btn" class="refresh-link">Retry now</button>
+                </div>
+
                 <div class="product-search">
                     <span class="search-icon">⌕</span>
                     <input
                         type="text"
                         id="search-input"
-                        placeholder="Search SKU or name"
+                        placeholder="Search SKU/name or scan a barcode"
                         autocomplete="off"
                     >
                     <button type="button" id="refresh-products-btn" class="refresh-link">Refresh</button>
@@ -288,16 +294,44 @@
         <div class="receipt-modal">
             <div class="receipt-modal-header">
                 <h2>Transaction Details</h2>
-                <button type="button" id="receipt-close-btn" class="modal-close-btn">✕</button>
+                <button type="button" id="receipt-close-btn" class="modal-close-btn" aria-label="Close">✕</button>
             </div>
 
             <div id="receipt-content" class="receipt-content"></div>
 
             <div class="modal-actions">
                 <button type="button" id="receipt-print-btn" class="secondary-btn">Print</button>
+                <button type="button" id="receipt-print-usb-btn" class="secondary-btn" hidden title="Sends raw ESC/POS commands directly to a USB thermal printer. Requires the printer's driver to be set to WinUSB (e.g. via Zadig) — most printers ship configured for the OS's standard printer driver instead, which blocks this.">Print to USB printer</button>
                 <button type="button" id="receipt-refund-btn" class="secondary-btn warning">Refund sale</button>
                 <button type="button" id="receipt-void-btn" class="secondary-btn danger">Void sale</button>
             </div>
+        </div>
+    </div>
+
+    <!-- MANAGER APPROVAL MODAL (large cash-count variance on close) -->
+    <div id="manager-approval-modal" class="modal-overlay" hidden>
+        <div class="register-modal">
+            <h2 style="margin-top:0;">Manager Approval Required</h2>
+            <p id="manager-approval-message" style="color:#64748b;"></p>
+
+            <form id="manager-approval-form">
+                <div class="account-field">
+                    <label for="manager-approval-email">Manager/Admin email</label>
+                    <input type="email" id="manager-approval-email" required>
+                </div>
+
+                <div class="account-field">
+                    <label for="manager-approval-password">Manager/Admin password</label>
+                    <input type="password" id="manager-approval-password" required>
+                </div>
+
+                <div id="manager-approval-error" class="modal-error" hidden></div>
+
+                <div class="modal-actions">
+                    <button type="button" id="manager-approval-cancel-btn" class="secondary-btn">Cancel</button>
+                    <button type="submit" class="secondary-btn danger">Approve &amp; Close</button>
+                </div>
+            </form>
         </div>
     </div>
 

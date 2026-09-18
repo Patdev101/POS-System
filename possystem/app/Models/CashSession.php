@@ -17,6 +17,7 @@ class CashSession extends Model
         'opened_at',
         'closed_at',
         'status',
+        'variance_approved_by',
     ];
 
     protected $casts = [

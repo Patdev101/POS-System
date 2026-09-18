@@ -24,7 +24,12 @@ class InventoryService
 
     protected function client()
     {
-        return Http::timeout(5)
+        // 5s was tripping the "offline" banner on a merely slow response
+        // (e.g. Inventory's dev server cold-starting after migrations) —
+        // not just a genuinely unreachable service. 10s gives real slowness
+        // room to resolve without waiting so long a cashier thinks the
+        // screen is frozen.
+        return Http::timeout(10)
             ->withToken($this->token);
     }
 

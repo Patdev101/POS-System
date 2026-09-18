@@ -10,6 +10,7 @@ use App\Http\Controllers\PosProductController;
 use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\AccountController;
+use App\Http\Controllers\AuditLogController;
 
 
 Route::post('/login', [AuthController::class, 'login']);
@@ -18,6 +19,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
         return $request->user();
     })->name('user');
+
+    Route::post('/logout', [AuthController::class, 'logout']);
 
     Route::put('/account/name', [AccountController::class, 'updateName'])->name('account.name.update');
     Route::put('/account/email', [AccountController::class, 'updateEmail'])->name('account.email.update');
@@ -46,5 +49,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/users/{targetUser}/deactivate', [UserController::class, 'deactivate']);
     Route::post('/users/{targetUser}/reactivate', [UserController::class, 'reactivate']);
     Route::post('/users/{targetUser}/reset-password', [UserController::class, 'resetPassword']);
+
+    Route::get('/audit-log', [AuditLogController::class, 'index']);
 
 });

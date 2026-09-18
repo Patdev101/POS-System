@@ -12,20 +12,25 @@
         <h1>{{ config('app.name') }}</h1>
         <p class="login-subtitle">Sign in to access your POS Dashboard</p>
 
-        <form id="login-form">
+        <form id="login-form" novalidate>
             <label for="email">Email</label>
             <input type="email" id="email" name="email" required autofocus placeholder="you@store.com">
+            <p class="field-error" id="email-error" hidden></p>
 
             <label for="password">Password</label>
             <input type="password" id="password" name="password" required placeholder="••••••••">
+            <p class="field-error" id="password-error" hidden></p>
 
             <div id="login-error" class="error-banner" hidden></div>
 
-            <button type="submit">Sign In</button>
+            <button type="submit" id="login-submit">
+                <span class="btn-spinner" hidden></span>
+                <span class="btn-label">Sign In</span>
+            </button>
         </form>
 
         <p class="login-subtitle" style="margin-top: 16px;">
-            Forgot your password? Please contact an administrator.
+            <a href="/pos/forgot-password">Forgot your password?</a>
         </p>
     </div>
 

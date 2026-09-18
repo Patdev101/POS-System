@@ -150,6 +150,13 @@ class SaleController extends Controller
             'data' => [
                 'id' => $sale->id,
                 'sale_number' => $sale->sale_number,
+                'store' => [
+                    'name' => config('pos.store.name', config('app.name')),
+                    'address' => config('pos.store.address'),
+                    'phone' => config('pos.store.phone'),
+                    'tax_id' => config('pos.store.tax_id'),
+                    'logo_url' => config('pos.store.logo_url'),
+                ],
                 'customer_name' => $sale->customer?->name ?? 'Walk-in Customer',
                 'status' => $sale->status,
                 'subtotal' => round((float) $sale->subtotal, 2),
@@ -162,6 +169,7 @@ class SaleController extends Controller
                     'id' => $item->id,
                     'product_name' => $item->product_name,
                     'sku' => $item->sku,
+                    'unit_label' => $item->unit_label,
                     'quantity' => (float) $item->quantity,
                     'unit_price' => round((float) $item->unit_price, 2),
                     'discount' => round((float) $item->discount, 2),
@@ -188,7 +196,20 @@ class SaleController extends Controller
 
         $width = 32;
         $lines = [];
-        $lines[] = str_pad(config('app.name', 'Store'), $width, ' ', STR_PAD_BOTH);
+        $lines[] = str_pad(config('pos.store.name', config('app.name', 'Store')), $width, ' ', STR_PAD_BOTH);
+
+        if (config('pos.store.address')) {
+            $lines[] = str_pad(config('pos.store.address'), $width, ' ', STR_PAD_BOTH);
+        }
+
+        if (config('pos.store.phone')) {
+            $lines[] = str_pad(config('pos.store.phone'), $width, ' ', STR_PAD_BOTH);
+        }
+
+        if (config('pos.store.tax_id')) {
+            $lines[] = str_pad('TIN: ' . config('pos.store.tax_id'), $width, ' ', STR_PAD_BOTH);
+        }
+
         $lines[] = str_repeat('-', $width);
         $lines[] = "Sale: {$sale->sale_number}";
         $lines[] = 'Date: ' . $sale->created_at?->format('Y-m-d H:i');
@@ -199,12 +220,13 @@ class SaleController extends Controller
         foreach ($sale->items as $item) {
             $lines[] = $item->product_name;
             $qty = rtrim(rtrim(number_format((float) $item->quantity, 3), '0'), '.');
+            $qtyWithUnit = $item->unit_label ? "{$qty} {$item->unit_label}" : $qty;
             $lineTotal = number_format((float) $item->subtotal, 2);
             $lines[] = sprintf(
                 '  %s x %s%s%s',
-                $qty,
+                $qtyWithUnit,
                 number_format((float) $item->unit_price, 2),
-                str_repeat(' ', max(1, $width - strlen("  {$qty} x " . number_format((float) $item->unit_price, 2)) - strlen($lineTotal))),
+                str_repeat(' ', max(1, $width - strlen("  {$qtyWithUnit} x " . number_format((float) $item->unit_price, 2)) - strlen($lineTotal))),
                 $lineTotal
             );
         }

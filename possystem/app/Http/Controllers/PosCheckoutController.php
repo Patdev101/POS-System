@@ -110,7 +110,13 @@ class PosCheckoutController extends Controller
             $productId = (int) $item['product_id'];
             $quantity = (float) $item['quantity'];
 
-            $product = $inventoryService->getProduct($productId);
+            try {
+                $product = $inventoryService->getProduct($productId);
+            } catch (\RuntimeException $e) {
+                return response()->json([
+                    'message' => 'Unable to reach the inventory service. Please try again in a moment.',
+                ], 503);
+            }
 
             if (!$product) {
                 return response()->json([
@@ -201,6 +207,13 @@ class PosCheckoutController extends Controller
                 'discount' => 0,
                 'subtotal' => $lineSubtotal,
                 'product_unit_id' => $productUnitId,
+                // Snapshot the unit's name (e.g. "Piece", "Box") at sale time
+                // so a receipt reads "2 Box" instead of just "2" — Inventory's
+                // unit data can change or be reassigned later, but a printed
+                // receipt must never change after the fact.
+                'unit_label' => $productUnit['unit_of_measure']['name']
+                    ?? $productUnit['unit_of_measure']['code']
+                    ?? null,
                 'location_id' => $locationId,
                 'conversion_factor' => $conversionFactor,
                 'base_quantity' => $requestedBaseQuantity,
@@ -332,6 +345,7 @@ class PosCheckoutController extends Controller
                     $sale->items()->create([
                         'product_id' => $item['product_id'],
                         'product_unit_id' => $item['product_unit_id'],
+                        'unit_label' => $item['unit_label'],
                         'location_id' => $item['location_id'],
                         'product_name' => $item['product_name'],
                         'sku' => $item['sku'],

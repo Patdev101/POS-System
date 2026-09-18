@@ -4,6 +4,24 @@ return [
     // Set this per POS installation in .env; never expose it as a cashier input.
     'location_id' => (int) env('POS_LOCATION_ID', 1),
 
+    // Legal receipt branding. Set these in .env per store; they print on
+    // every receipt so a printed receipt satisfies basic business-receipt
+    // requirements (store name, address, contact, tax registration number).
+    'store' => [
+        'name' => env('POS_STORE_NAME', config('app.name')),
+        'address' => env('POS_STORE_ADDRESS'),
+        'phone' => env('POS_STORE_PHONE'),
+        'tax_id' => env('POS_STORE_TAX_ID'),
+        'logo_url' => env('POS_STORE_LOGO_URL'),
+    ],
+
+    // Cash-drawer variance (counted cash vs expected cash) beyond which a
+    // cashier can no longer close their own register — a manager/admin must
+    // enter their credentials to approve the close. Set to 0 to require
+    // approval on any non-zero variance, or a very large number to disable
+    // the gate entirely.
+    'cash_variance_threshold' => (float) env('POS_CASH_VARIANCE_THRESHOLD', 200),
+
     // Store-wide tax rate as a percentage (e.g. 12 for 12% VAT). A business policy
     // decision, not a per-sale choice — the checkout endpoint always uses this
     // value and ignores anything a client sends, so it can never be tampered with

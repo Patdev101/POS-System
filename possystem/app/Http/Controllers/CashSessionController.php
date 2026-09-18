@@ -4,9 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Models\CashSession;
 use App\Models\Sale;
+use App\Models\User;
 use App\Services\PosAuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 
 class CashSessionController extends Controller
@@ -100,6 +102,8 @@ class CashSessionController extends Controller
 
         $validated = $request->validate([
             'closing_cash' => ['required', 'numeric', 'min:0'],
+            'manager_email' => ['nullable', 'email'],
+            'manager_password' => ['nullable', 'string'],
         ]);
 
         $cashSession = CashSession::query()
@@ -118,14 +122,46 @@ class CashSessionController extends Controller
 
         $actualCash = (float) $validated['closing_cash'];
         $variance = round($actualCash - $expectedCash, 2);
+        $threshold = (float) config('pos.cash_variance_threshold');
+
+        $approvingManager = null;
+
+        // A cashier whose count is off by more than the configured threshold
+        // can't close their own drawer — a manager/admin has to type their
+        // own credentials to approve it. Managers/admins closing their own
+        // session are already the approval authority, so this never blocks
+        // them.
+        if (abs($variance) > $threshold && !$user->isManager()) {
+            if (empty($validated['manager_email']) || empty($validated['manager_password'])) {
+                return response()->json([
+                    'message' => "This drawer is off by ₱" . number_format(abs($variance), 2) . ", which is over the ₱" . number_format($threshold, 2) . " limit. A manager or admin must enter their credentials to approve closing it.",
+                    'requires_manager_approval' => true,
+                ], 422);
+            }
+
+            $approvingManager = User::where('email', $validated['manager_email'])->first();
+
+            if (
+                !$approvingManager
+                || !Hash::check($validated['manager_password'], $approvingManager->password)
+                || !$approvingManager->isManager()
+                || !$approvingManager->isActive()
+            ) {
+                return response()->json([
+                    'message' => 'Those manager credentials are invalid.',
+                    'requires_manager_approval' => true,
+                ], 422);
+            }
+        }
 
         $cashSession->update([
             'closing_cash' => $actualCash,
             'closed_at' => now(),
             'status' => 'closed',
+            'variance_approved_by' => $approvingManager?->id,
         ]);
 
-        $auditLogger->cashSessionClosed($cashSession, $expectedCash, $actualCash, $variance);
+        $auditLogger->cashSessionClosed($cashSession, $expectedCash, $actualCash, $variance, $approvingManager);
 
         return response()->json([
             'data' => [
@@ -135,6 +171,7 @@ class CashSessionController extends Controller
                 'variance' => round($variance, 2),
                 'status' => $cashSession->status,
                 'closed_at' => $cashSession->closed_at,
+                'variance_approved_by' => $approvingManager?->name,
             ],
         ], 200);
     }

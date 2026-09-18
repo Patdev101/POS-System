@@ -57,6 +57,7 @@
 
             <div class="header-actions">
                 <a href="/pos/manager" class="header-btn">Manager Console</a>
+                <a href="/pos/manager/audit-log" class="header-btn">Audit Log</a>
                 <a href="/pos" class="header-btn">Back to POS</a>
                 <a href="/pos/account" class="header-btn">My Account</a>
                 <span class="logged-in-badge">Logged in: <strong id="cashier-name">User</strong></span>

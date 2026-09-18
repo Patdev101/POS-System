@@ -1,7 +1,7 @@
 <!-- CONFIRM MODAL (replaces window.confirm()/window.prompt() for destructive actions) -->
 <div class="modal-overlay" id="confirm-modal-overlay" hidden>
 
-    <div class="confirm-modal-box">
+    <div class="confirm-modal-box" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
 
         <h3 id="confirm-modal-title">Are you sure?</h3>
         <p id="confirm-modal-message">This action cannot be undone.</p>

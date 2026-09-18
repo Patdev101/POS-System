@@ -33,6 +33,7 @@
             <div class="header-actions">
                 <a href="/pos" class="header-btn">Back to POS</a>
                 <a href="/pos/manager/users" class="header-btn">Manage Users</a>
+                <a href="/pos/manager/audit-log" class="header-btn">Audit Log</a>
                 <a href="/pos/account" class="header-btn">My Account</a>
                 <span class="logged-in-badge">Logged in: <strong id="cashier-name">User</strong></span>
                 <button id="logout-btn" class="header-btn logout-btn">Logout</button>
@@ -68,6 +69,7 @@
                     <label for="report-date-input">Date</label>
                     <input type="date" id="report-date-input">
                     <button type="button" id="report-today-btn" class="refresh-link">Today</button>
+                    <button type="button" id="report-export-csv-btn" class="refresh-link">Export CSV</button>
                 </div>
             </div>
 
@@ -151,6 +153,7 @@
                     <label for="analytics-month-input">Month</label>
                     <input type="month" id="analytics-month-input">
                     <button type="button" id="analytics-this-month-btn" class="refresh-link">This Month</button>
+                    <button type="button" id="analytics-export-csv-btn" class="refresh-link">Export CSV</button>
                 </div>
             </div>
 
@@ -197,13 +200,14 @@
         <div class="receipt-modal">
             <div class="receipt-modal-header">
                 <h2>Transaction Details</h2>
-                <button type="button" id="receipt-close-btn" class="modal-close-btn">✕</button>
+                <button type="button" id="receipt-close-btn" class="modal-close-btn" aria-label="Close">✕</button>
             </div>
 
             <div id="receipt-content" class="receipt-content"></div>
 
             <div class="modal-actions">
                 <button type="button" id="receipt-print-btn" class="secondary-btn">Print</button>
+                <button type="button" id="receipt-print-usb-btn" class="secondary-btn" hidden title="Sends raw ESC/POS commands directly to a USB thermal printer. Requires the printer's driver to be set to WinUSB (e.g. via Zadig) — most printers ship configured for the OS's standard printer driver instead, which blocks this.">Print to USB printer</button>
                 <button type="button" id="receipt-refund-btn" class="secondary-btn warning">Refund sale</button>
                 <button type="button" id="receipt-void-btn" class="secondary-btn danger">Void sale</button>
             </div>

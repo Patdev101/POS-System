@@ -1,4 +1,4 @@
-﻿const Pos = (function () {
+const Pos = (function () {
     const TOKEN_KEY = 'pos_token';
     const USER_KEY = 'pos_user';
 
@@ -78,6 +78,23 @@
         return data;
     }
 
+    /*
+     * Best-effort server-side token revocation before clearing the local
+     * session. If the request fails (e.g. offline, token already expired),
+     * the user still gets logged out locally — a failed revoke call must
+     * never trap someone on the page.
+     */
+    async function logout() {
+        try {
+            await apiFetch('/logout', { method: 'POST' });
+        } catch (err) {
+            // Ignore — still proceed to clear the local session below.
+        }
+
+        clearSession();
+        window.location.href = '/pos/login';
+    }
+
     function money(value) {
         return '₱' + Number(value || 0).toFixed(2);
     }
@@ -108,6 +125,28 @@
         };
     }
 
+    function csvCell(value) {
+        const str = value === null || value === undefined ? '' : String(value);
+        return '"' + str.replace(/"/g, '""') + '"';
+    }
+
+    function downloadCsv(filename, headers, rows) {
+        const lines = [headers.map(csvCell).join(',')]
+            .concat(rows.map(function (row) { return row.map(csvCell).join(','); }));
+
+        // Leading BOM so Excel opens UTF-8 CSVs (e.g. ₱) without mangling them.
+        const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+
     function generateIdempotencyKey() {
         if (window.crypto && window.crypto.randomUUID) {
             return window.crypto.randomUUID();
@@ -126,13 +165,80 @@
 
         const form = document.getElementById('login-form');
         const errorBanner = document.getElementById('login-error');
+        const submitBtn = document.getElementById('login-submit');
+        const spinner = submitBtn ? submitBtn.querySelector('.btn-spinner') : null;
+        const label = submitBtn ? submitBtn.querySelector('.btn-label') : null;
+        const emailInput = document.getElementById('email');
+        const passwordInput = document.getElementById('password');
+
+        function setLoading(isLoading) {
+            if (!submitBtn) return;
+            submitBtn.disabled = isLoading;
+            if (spinner) spinner.hidden = !isLoading;
+            if (label) label.textContent = isLoading ? 'Signing in…' : 'Sign In';
+        }
+
+        function friendlyMessage(input) {
+            const validity = input.validity;
+
+            if (validity.valueMissing) {
+                return input === emailInput ? 'Please enter your email address.' : 'Please enter your password.';
+            }
+
+            if (validity.typeMismatch && input === emailInput) {
+                return "Please include an '@' in the email address. '" + input.value + "' is missing an '@'.";
+            }
+
+            return input.validationMessage || 'This field is invalid.';
+        }
+
+        function showFieldError(input) {
+            const errorEl = document.getElementById(input.id + '-error');
+            if (!errorEl) return;
+
+            if (input.validity.valid) {
+                errorEl.hidden = true;
+                errorEl.textContent = '';
+                input.classList.remove('field-invalid');
+            } else {
+                errorEl.textContent = friendlyMessage(input);
+                errorEl.hidden = false;
+                input.classList.add('field-invalid');
+            }
+        }
+
+        function validateField(input) {
+            showFieldError(input);
+            return input.validity.valid;
+        }
+
+        [emailInput, passwordInput].forEach(function (input) {
+            input.addEventListener('input', function () {
+                if (input.classList.contains('field-invalid')) {
+                    validateField(input);
+                }
+            });
+            input.addEventListener('blur', function () {
+                validateField(input);
+            });
+        });
 
         form.addEventListener('submit', async function (e) {
             e.preventDefault();
             errorBanner.hidden = true;
 
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value;
+            const emailValid = validateField(emailInput);
+            const passwordValid = validateField(passwordInput);
+
+            if (!emailValid || !passwordValid) {
+                (emailValid ? passwordInput : emailInput).focus();
+                return;
+            }
+
+            setLoading(true);
+
+            const email = emailInput.value;
+            const password = passwordInput.value;
 
             try {
                 const response = await fetch('/api/login', {
@@ -146,6 +252,7 @@
                 if (!response.ok) {
                     errorBanner.textContent = data.message || 'Invalid credentials.';
                     errorBanner.hidden = false;
+                    setLoading(false);
                     return;
                 }
 
@@ -157,6 +264,7 @@
             } catch (err) {
                 errorBanner.textContent = 'Unable to reach the server. Please try again.';
                 errorBanner.hidden = false;
+                setLoading(false);
             }
         });
     }
@@ -203,8 +311,7 @@
                 return;
             }
 
-            clearSession();
-            window.location.href = '/pos/login';
+            logout();
         });
 
         document.getElementById('search-input').addEventListener(
@@ -224,28 +331,7 @@
         document.getElementById('search-input').addEventListener('keydown', function (e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
-
-                const topProduct = (state.visibleProducts || [])[0];
-
-                if (!topProduct || topProduct.stock_quantity <= 0) {
-                    return;
-                }
-
-                const units =
-                    topProduct.units && topProduct.units.length
-                        ? topProduct.units
-                        : [{
-                              id: null,
-                              name: topProduct.base_unit ? topProduct.base_unit.name : 'unit',
-                              code: topProduct.base_unit ? topProduct.base_unit.code : '',
-                              conversion_factor: 1,
-                              is_default: true,
-                          }];
-
-                const defaultUnit =
-                    units.find(function (u) { return u.is_default; }) || units[0];
-
-                addToCart(topProduct, defaultUnit);
+                addTopMatchOrScannedCodeToCart(e.target.value);
             } else if (e.key === 'Escape') {
                 e.preventDefault();
                 e.target.value = '';
@@ -312,6 +398,27 @@
         document.getElementById('open-register-btn').addEventListener('click', openRegister);
         document.getElementById('close-register-btn').addEventListener('click', closeRegister);
 
+        document.getElementById('inventory-offline-retry-btn').addEventListener('click', function () {
+            loadProducts(document.getElementById('search-input').value);
+        });
+
+        document.getElementById('manager-approval-cancel-btn').addEventListener('click', closeManagerApprovalModal);
+
+        document.getElementById('manager-approval-form').addEventListener('submit', async function (e) {
+            e.preventDefault();
+
+            document.getElementById('manager-approval-error').hidden = true;
+
+            const email = document.getElementById('manager-approval-email').value.trim();
+            const password = document.getElementById('manager-approval-password').value;
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+
+            await submitCloseRegister(state.pendingClosingCash, { email: email, password: password });
+
+            submitBtn.disabled = false;
+        });
+
         bindReceiptModalListeners();
 
         updatePaymentFieldsVisibility();
@@ -323,6 +430,17 @@
         document.getElementById('receipt-print-btn').addEventListener('click', printCurrentReceipt);
         document.getElementById('receipt-void-btn').addEventListener('click', voidCurrentSale);
         document.getElementById('receipt-refund-btn').addEventListener('click', refundCurrentSale);
+
+        // Only offered when the browser actually supports WebUSB — most
+        // browsers besides Chromium-based ones don't, so this button stays
+        // hidden rather than being shown and failing every time.
+        const usbPrintBtn = document.getElementById('receipt-print-usb-btn');
+        if (usbPrintBtn) {
+            if (navigator.usb) {
+                usbPrintBtn.hidden = false;
+                usbPrintBtn.addEventListener('click', printCurrentReceiptViaUsb);
+            }
+        }
 
         document.getElementById('receipt-modal').addEventListener('click', function (e) {
             if (e.target.id === 'receipt-modal') {
@@ -430,8 +548,7 @@
         document.getElementById('cashier-name').textContent = user ? user.name : '';
 
         document.getElementById('logout-btn').addEventListener('click', function () {
-            clearSession();
-            window.location.href = '/pos/login';
+            logout();
         });
 
         document.getElementById('report-date-input').addEventListener('change', function () {
@@ -452,6 +569,14 @@
         document.getElementById('analytics-this-month-btn').addEventListener('click', function () {
             document.getElementById('analytics-month-input').value = currentMonthString();
             loadProductAnalytics(currentMonthString());
+        });
+
+        document.getElementById('report-export-csv-btn').addEventListener('click', function () {
+            exportSalesReportCsv();
+        });
+
+        document.getElementById('analytics-export-csv-btn').addEventListener('click', function () {
+            exportProductAnalyticsCsv();
         });
 
         document.querySelectorAll('.period-toggle-btn').forEach(function (btn) {
@@ -518,8 +643,7 @@
         }
 
         document.getElementById('logout-btn').addEventListener('click', function () {
-            clearSession();
-            window.location.href = '/pos/login';
+            logout();
         });
 
         document.getElementById('create-user-form').addEventListener('submit', createUser);
@@ -533,6 +657,123 @@
         loadUsers().then(function () {
             document.getElementById('page-loader').hidden = true;
             document.getElementById('app').hidden = false;
+        });
+    }
+
+    /* ---------------- Audit log (manager/admin only) ---------------- */
+
+    state.auditLogPage = 1;
+    state.auditLogLastPage = 1;
+
+    function initAuditLogPage() {
+        if (!getToken()) {
+            window.location.href = '/pos/login';
+            return;
+        }
+
+        if (redirectIfMustChangePassword()) {
+            return;
+        }
+
+        if (!isManagerRole()) {
+            window.location.href = '/pos';
+            return;
+        }
+
+        const user = getUser();
+        document.getElementById('cashier-name').textContent = user ? user.name : '';
+
+        document.getElementById('logout-btn').addEventListener('click', function () {
+            logout();
+        });
+
+        document.getElementById('audit-filter-btn').addEventListener('click', function () {
+            state.auditLogPage = 1;
+            loadAuditLog();
+        });
+
+        document.getElementById('audit-clear-btn').addEventListener('click', function () {
+            document.getElementById('audit-event-input').value = '';
+            document.getElementById('audit-date-from-input').value = '';
+            document.getElementById('audit-date-to-input').value = '';
+            state.auditLogPage = 1;
+            loadAuditLog();
+        });
+
+        document.getElementById('audit-prev-btn').addEventListener('click', function () {
+            if (state.auditLogPage > 1) {
+                state.auditLogPage -= 1;
+                loadAuditLog();
+            }
+        });
+
+        document.getElementById('audit-next-btn').addEventListener('click', function () {
+            if (state.auditLogPage < state.auditLogLastPage) {
+                state.auditLogPage += 1;
+                loadAuditLog();
+            }
+        });
+
+        loadAuditLog().then(function () {
+            document.getElementById('page-loader').hidden = true;
+            document.getElementById('app').hidden = false;
+        });
+    }
+
+    async function loadAuditLog() {
+        const tbody = document.getElementById('audit-log-table-body');
+
+        if (!tbody) {
+            return;
+        }
+
+        tbody.innerHTML = '<tr><td colspan="4" class="table-empty">Loading events...</td></tr>';
+
+        const params = new URLSearchParams();
+        params.set('page', state.auditLogPage);
+
+        const eventFilter = document.getElementById('audit-event-input').value.trim();
+        const dateFrom = document.getElementById('audit-date-from-input').value;
+        const dateTo = document.getElementById('audit-date-to-input').value;
+
+        if (eventFilter) params.set('event', eventFilter);
+        if (dateFrom) params.set('date_from', dateFrom);
+        if (dateTo) params.set('date_to', dateTo);
+
+        try {
+            const response = await apiFetch('/audit-log?' + params.toString());
+            renderAuditLogTable(response.data || []);
+            state.auditLogPage = response.current_page || 1;
+            state.auditLogLastPage = response.last_page || 1;
+            document.getElementById('audit-log-page-label').textContent =
+                'Page ' + state.auditLogPage + ' of ' + state.auditLogLastPage + ' (' + (response.total || 0) + ' events)';
+        } catch (err) {
+            tbody.innerHTML = '<tr><td colspan="4" class="table-empty">Unable to load audit log.</td></tr>';
+        }
+    }
+
+    function renderAuditLogTable(entries) {
+        const tbody = document.getElementById('audit-log-table-body');
+        tbody.innerHTML = '';
+
+        if (entries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="table-empty">No events found.</td></tr>';
+            return;
+        }
+
+        entries.forEach(function (entry) {
+            const row = document.createElement('tr');
+            const when = entry.created_at ? new Date(entry.created_at).toLocaleString() : '—';
+            const who = entry.user ? escapeHtml(entry.user.name) + ' (' + escapeHtml(entry.user.email) + ')' : '—';
+            const context = entry.context ? escapeHtml(JSON.stringify(entry.context)) : '';
+
+            row.innerHTML =
+                '<td>' + when + '</td>' +
+                '<td><span class="role-badge">' + escapeHtml(entry.event) + '</span></td>' +
+                '<td>' + who + '</td>' +
+                '<td style="max-width:420px;overflow-wrap:anywhere;font-size:12px;color:#64748b;">' + context + '</td>';
+
+            tbody.appendChild(row);
         });
     }
 
@@ -938,6 +1179,8 @@
             });
         });
 
+        state.productAnalyticsSold = sold;
+
         if (salesLoaded) {
             renderTopProducts(sold);
             state.monthlySales = sales;
@@ -948,8 +1191,10 @@
 
         try {
             const productsResponse = await apiFetch('/pos/products?search=');
-            renderSlowProducts(sold, productsResponse.data || []);
+            state.productAnalyticsCatalog = productsResponse.data || [];
+            renderSlowProducts(sold, state.productAnalyticsCatalog);
         } catch (err) {
+            state.productAnalyticsCatalog = [];
             slowList.innerHTML = '<div class="table-empty">Unable to load the product catalog (is the Inventory service running?).</div>';
         }
     }
@@ -1025,6 +1270,72 @@
             document.getElementById('cashier-breakdown-body').innerHTML = '<tr><td colspan="4" class="table-empty">Unable to load.</td></tr>';
             document.getElementById('payment-breakdown-body').innerHTML = '<tr><td colspan="3" class="table-empty">Unable to load.</td></tr>';
         }
+    }
+
+    function exportSalesReportCsv() {
+        const sales = state.sales || [];
+
+        if (sales.length === 0) {
+            showError('No sales to export for the selected date.');
+            return;
+        }
+
+        const headers = ['Transaction ID', 'Date/Time', 'Cashier', 'Customer', 'Items', 'Subtotal', 'Discount', 'Tax', 'Total', 'Status'];
+
+        const rows = sales.map(function (sale) {
+            const itemsSummary = (sale.items || [])
+                .map(function (item) {
+                    return item.product_name + ' x' + formatQty(item.quantity) + (item.unit_label ? ' ' + item.unit_label : '');
+                })
+                .join('; ');
+
+            return [
+                sale.sale_number,
+                formatDateTime(sale.created_at),
+                sale.user ? sale.user.name : '',
+                sale.customer ? sale.customer.name : 'Walk-in Customer',
+                itemsSummary,
+                Number(sale.subtotal || 0).toFixed(2),
+                Number(sale.discount || 0).toFixed(2),
+                Number(sale.tax || 0).toFixed(2),
+                Number(sale.total || 0).toFixed(2),
+                sale.status,
+            ];
+        });
+
+        const dateLabel = document.getElementById('report-date-input').value || todayDateString();
+        downloadCsv('sales-report-' + dateLabel + '.csv', headers, rows);
+    }
+
+    function exportProductAnalyticsCsv() {
+        const topRows = Object.values(state.productAnalyticsSold || {})
+            .sort(function (a, b) { return b.revenue - a.revenue; })
+            .map(function (row) {
+                return ['Top Seller', row.name, formatQty(row.quantity), Number(row.revenue).toFixed(2)];
+            });
+
+        const soldNames = {};
+        Object.values(state.productAnalyticsSold || {}).forEach(function (row) { soldNames[row.name] = true; });
+
+        const slowRows = (state.productAnalyticsCatalog || [])
+            .filter(function (product) { return !soldNames[product.name]; })
+            .map(function (product) {
+                return ['Not Selling', product.name, '0', '0.00'];
+            });
+
+        const rows = topRows.concat(slowRows);
+
+        if (rows.length === 0) {
+            showError('No product analytics to export for the selected month.');
+            return;
+        }
+
+        const monthStr = document.getElementById('analytics-month-input').value || currentMonthString();
+        downloadCsv(
+            'product-analytics-' + monthStr + '.csv',
+            ['Category', 'Product', 'Quantity Sold', 'Revenue'],
+            rows
+        );
     }
 
     function computeCashierBreakdown(salesArray) {
@@ -1207,7 +1518,12 @@
         tbody.innerHTML = '';
 
         if (state.sales.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="table-empty">No sales recorded yet.</td></tr>';
+            const selectedDate = document.getElementById('report-date-input').value;
+            const isFuture = selectedDate && selectedDate > todayDateString();
+            const message = isFuture
+                ? 'That date is in the future — no sales exist yet.'
+                : 'No sales recorded for this date.';
+            tbody.innerHTML = '<tr><td colspan="8" class="table-empty">' + message + '</td></tr>';
             return;
         }
 
@@ -1326,9 +1642,10 @@
             const sale = response.data;
 
             const itemsHtml = sale.items.map(function (item) {
+                const unitSuffix = item.unit_label ? ' ' + escapeHtml(item.unit_label) : '';
                 return (
                     '<div class="receipt-item-row">' +
-                    '<span>' + escapeHtml(item.product_name) + ' x ' + formatQty(item.quantity) + '</span>' +
+                    '<span>' + escapeHtml(item.product_name) + ' x ' + formatQty(item.quantity) + unitSuffix + '</span>' +
                     '<span>' + money(item.subtotal) + '</span>' +
                     '</div>'
                 );
@@ -1343,7 +1660,18 @@
                 );
             }).join('');
 
+            const store = sale.store || {};
+            const storeHtml =
+                '<div class="receipt-store-header">' +
+                (store.logo_url ? '<img src="' + escapeHtml(store.logo_url) + '" alt="" class="receipt-store-logo">' : '') +
+                '<strong>' + escapeHtml(store.name || '') + '</strong>' +
+                (store.address ? '<div>' + escapeHtml(store.address) + '</div>' : '') +
+                (store.phone ? '<div>' + escapeHtml(store.phone) + '</div>' : '') +
+                (store.tax_id ? '<div>TIN: ' + escapeHtml(store.tax_id) + '</div>' : '') +
+                '</div>';
+
             document.getElementById('receipt-content').innerHTML =
+                storeHtml +
                 '<div class="receipt-row"><span>Transaction ID</span><strong>' + escapeHtml(sale.sale_number) + '</strong></div>' +
                 '<div class="receipt-row"><span>Date/Time</span><span>' + escapeHtml(formatDateTime(sale.created_at)) + '</span></div>' +
                 '<div class="receipt-row"><span>Customer</span><span>' + escapeHtml(sale.customer_name) + '</span></div>' +
@@ -1384,9 +1712,16 @@
             return;
         }
 
+        // Sized for real 58mm thermal paper, matching the 32-character line
+        // width SaleController::receiptText() already formats to — not a
+        // full page, which would waste paper and print with the browser's
+        // default page margins.
         printWindow.document.write(
             '<html><head><title>Receipt</title><style>' +
-            'body{font-family:monospace;font-size:13px;padding:16px;white-space:pre-wrap;}' +
+            '@page{size:58mm auto;margin:0;}' +
+            '*{box-sizing:border-box;}' +
+            'html,body{margin:0;padding:0;}' +
+            'body{font-family:"Courier New",monospace;font-size:11px;line-height:1.35;width:58mm;padding:2mm;white-space:pre-wrap;word-break:break-word;}' +
             '</style></head><body>Loading receipt...</body></html>'
         );
 
@@ -1410,6 +1745,110 @@
     function printCurrentReceipt() {
         if (state.activeSaleId) {
             printReceipt(state.activeSaleId);
+        }
+    }
+
+    /*
+     * Builds raw ESC/POS command bytes from the same plain-text receipt the
+     * browser-print path uses. Only ESC @ (initialize), the receipt text
+     * itself, three line feeds, and GS V 1 (partial cut) are used — the
+     * common subset nearly every ESC/POS-compatible thermal printer
+     * supports, rather than model-specific formatting commands.
+     *
+     * Caveat: this assumes the printer's default code page is plain ASCII/
+     * CP437-like. A currency symbol such as ₱ is outside that range and
+     * will likely print as a substituted or blank character on real
+     * hardware — full code-page handling would need to be tuned per
+     * printer model, which isn't something this can account for generically.
+     */
+    function buildEscPosReceipt(text) {
+        const ESC = 0x1b;
+        const GS = 0x1d;
+        const init = [ESC, 0x40]; // ESC @
+        const textBytes = Array.from(new TextEncoder().encode(text));
+        const feedAndCut = [0x0a, 0x0a, 0x0a, GS, 0x56, 0x01]; // 3x LF, GS V 1 (partial cut)
+
+        return new Uint8Array(init.concat(textBytes, feedAndCut));
+    }
+
+    /*
+     * Sends the receipt directly to a USB thermal printer via WebUSB,
+     * bypassing the OS print dialog entirely. Only works if the printer's
+     * USB driver has been switched to WinUSB (e.g. via Zadig) — the
+     * standard USB Printer class driver that most thermal printers use out
+     * of the box claims the device first and blocks WebUSB from reaching
+     * it, so this will fail with a clear message for most default setups.
+     */
+    async function printReceiptViaUsb(saleId) {
+        if (!navigator.usb) {
+            showError('This browser does not support WebUSB printing. Use the regular Print button instead.');
+            return;
+        }
+
+        let device;
+
+        try {
+            device = await navigator.usb.requestDevice({ filters: [] });
+        } catch (err) {
+            // User closed the device picker without choosing one — not an error.
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/sales/' + saleId + '/receipt/print', {
+                headers: { Authorization: 'Bearer ' + getToken() },
+            });
+
+            if (!response.ok) {
+                throw new Error('Unable to load the printable receipt.');
+            }
+
+            const text = await response.text();
+            const data = buildEscPosReceipt(text);
+
+            await device.open();
+
+            if (!device.configuration) {
+                await device.selectConfiguration(1);
+            }
+
+            const usbInterface = device.configuration.interfaces.find(function (iface) {
+                return iface.alternates.some(function (alt) {
+                    return alt.endpoints.some(function (ep) { return ep.direction === 'out'; });
+                });
+            });
+
+            if (!usbInterface) {
+                throw new Error('No usable USB output endpoint found on this device.');
+            }
+
+            await device.claimInterface(usbInterface.interfaceNumber);
+
+            const outEndpoint = usbInterface.alternates[0].endpoints.find(function (ep) {
+                return ep.direction === 'out';
+            });
+
+            await device.transferOut(outEndpoint.endpointNumber, data);
+            await device.close();
+
+            showSuccess('Sent to USB printer.');
+        } catch (err) {
+            showError(
+                'Unable to print via USB: ' + err.message +
+                ' — most printers need their driver switched to WinUSB (via a tool like Zadig) before a browser can talk to them directly. Use the regular Print button instead.'
+            );
+
+            try {
+                await device.close();
+            } catch (closeErr) {
+                // Already closed or never opened — nothing to do.
+            }
+        }
+    }
+
+    function printCurrentReceiptViaUsb() {
+        if (state.activeSaleId) {
+            printReceiptViaUsb(state.activeSaleId);
         }
     }
 
@@ -1437,6 +1876,10 @@
             return;
         }
 
+        const voidBtn = document.getElementById('receipt-void-btn');
+        voidBtn.disabled = true;
+        voidBtn.classList.add('is-loading');
+
         try {
             await apiFetch('/sales/' + state.activeSaleId + '/void', {
                 method: 'POST',
@@ -1448,6 +1891,9 @@
             showSuccess('Sale voided.');
         } catch (err) {
             showError(err.data && err.data.message ? err.data.message : err.message);
+        } finally {
+            voidBtn.disabled = false;
+            voidBtn.classList.remove('is-loading');
         }
     }
 
@@ -1470,6 +1916,10 @@
             return;
         }
 
+        const refundBtn = document.getElementById('receipt-refund-btn');
+        refundBtn.disabled = true;
+        refundBtn.classList.add('is-loading');
+
         try {
             await apiFetch('/sales/' + state.activeSaleId + '/refund', {
                 method: 'POST',
@@ -1481,6 +1931,9 @@
             showSuccess('Sale refunded.');
         } catch (err) {
             showError(err.data && err.data.message ? err.data.message : err.message);
+        } finally {
+            refundBtn.disabled = false;
+            refundBtn.classList.remove('is-loading');
         }
     }
 
@@ -1566,6 +2019,9 @@
         errorBanner.hidden = true;
 
         const openingCash = parseFloat(document.getElementById('opening-cash-input').value || '0');
+        const openBtn = document.getElementById('open-register-btn');
+        openBtn.disabled = true;
+        openBtn.classList.add('is-loading');
 
         try {
             await apiFetch('/cash-sessions/open', {
@@ -1577,6 +2033,9 @@
         } catch (err) {
             errorBanner.textContent = err.data && err.data.message ? err.data.message : err.message;
             errorBanner.hidden = false;
+            openBtn.disabled = false;
+        } finally {
+            openBtn.classList.remove('is-loading');
         }
     }
 
@@ -1595,15 +2054,34 @@
             return;
         }
 
+        await submitCloseRegister(closingCash, null);
+    }
+
+    /*
+     * Shared by the normal close and the manager-approval retry. A large
+     * variance rejects with `requires_manager_approval` instead of an
+     * ordinary error — that response opens the manager credentials modal
+     * rather than just showing an error banner.
+     */
+    async function submitCloseRegister(closingCash, managerCredentials) {
+        const errorBanner = document.getElementById('register-error');
+        const approvalError = document.getElementById('manager-approval-error');
+        const isRetry = !!managerCredentials;
         const closeBtn = document.getElementById('close-register-btn');
         closeBtn.disabled = true;
+        closeBtn.classList.add('is-loading');
+
+        const payload = { closing_cash: closingCash };
+
+        if (managerCredentials) {
+            payload.manager_email = managerCredentials.email;
+            payload.manager_password = managerCredentials.password;
+        }
 
         try {
             const response = await apiFetch('/cash-sessions/close', {
                 method: 'POST',
-                body: JSON.stringify({
-                    closing_cash: closingCash,
-                }),
+                body: JSON.stringify(payload),
             });
 
             const result = response.data;
@@ -1611,10 +2089,13 @@
             const varianceClass = variance === 0 ? '' : (variance > 0 ? 'variance-positive' : 'variance-negative');
             const varianceLabel = variance === 0 ? 'Balanced' : (variance > 0 ? 'Over by' : 'Short by');
 
+            closeManagerApprovalModal();
+
             showSessionSummary(
                 '<div class="session-summary-row"><span>Expected cash</span><span>' + money(result.expected_cash) + '</span></div>' +
                 '<div class="session-summary-row"><span>Counted cash</span><span>' + money(result.actual_cash) + '</span></div>' +
-                '<div class="session-summary-row"><span>' + varianceLabel + '</span><span class="variance-value">' + money(Math.abs(variance)) + '</span></div>',
+                '<div class="session-summary-row"><span>' + varianceLabel + '</span><span class="variance-value">' + money(Math.abs(variance)) + '</span></div>' +
+                (result.variance_approved_by ? '<div class="session-summary-row"><span>Approved by</span><span>' + escapeHtml(result.variance_approved_by) + '</span></div>' : ''),
                 varianceClass
             );
 
@@ -1624,15 +2105,39 @@
             );
 
             await refreshCashSession();
+            return true;
         } catch (err) {
-            errorBanner.textContent =
-                err.data && err.data.message
-                    ? err.data.message
-                    : err.message;
+            const message = err.data && err.data.message ? err.data.message : err.message;
 
+            if (err.data && err.data.requires_manager_approval) {
+                state.pendingClosingCash = closingCash;
+                document.getElementById('manager-approval-modal').hidden = false;
+
+                if (isRetry) {
+                    approvalError.textContent = message;
+                    approvalError.hidden = false;
+                } else {
+                    document.getElementById('manager-approval-message').textContent = message;
+                    document.getElementById('manager-approval-email').value = '';
+                    document.getElementById('manager-approval-password').value = '';
+                    approvalError.hidden = true;
+                }
+
+                return false;
+            }
+
+            errorBanner.textContent = message;
             errorBanner.hidden = false;
+            return false;
+        } finally {
             closeBtn.disabled = false;
+            closeBtn.classList.remove('is-loading');
         }
+    }
+
+    function closeManagerApprovalModal() {
+        document.getElementById('manager-approval-modal').hidden = true;
+        state.pendingClosingCash = null;
     }
     async function loadProducts(search) {
         try {
@@ -1640,8 +2145,51 @@
             state.products = response.data || [];
             populateCategoryFilter();
             renderProducts();
+            hideInventoryOfflineBanner();
         } catch (err) {
+            if (err.status === 503) {
+                showInventoryOfflineBanner(search);
+                return;
+            }
+
             showError('Unable to load products: ' + err.message);
+        }
+    }
+
+    /*
+     * The Inventory service being unreachable is a distinct, recoverable
+     * state (§10 item 9 in the docs — "offline mode") — not a one-off error
+     * toast. Shows a persistent banner and keeps retrying in the background
+     * until the catalog loads again, instead of leaving the cashier stuck
+     * with a stale/empty grid and no way forward besides refreshing the
+     * whole page.
+     */
+    function showInventoryOfflineBanner(search) {
+        const banner = document.getElementById('inventory-offline-banner');
+        if (!banner) {
+            return;
+        }
+
+        banner.hidden = false;
+
+        if (state.inventoryOfflineRetryTimer) {
+            return;
+        }
+
+        state.inventoryOfflineRetryTimer = setInterval(function () {
+            loadProducts(search);
+        }, 15000);
+    }
+
+    function hideInventoryOfflineBanner() {
+        const banner = document.getElementById('inventory-offline-banner');
+        if (banner) {
+            banner.hidden = true;
+        }
+
+        if (state.inventoryOfflineRetryTimer) {
+            clearInterval(state.inventoryOfflineRetryTimer);
+            state.inventoryOfflineRetryTimer = null;
         }
     }
 
@@ -1887,6 +2435,64 @@
         const baseStock = Number(product.stock_quantity || 0);
 
         return Math.floor(baseStock / conversionFactor);
+    }
+
+    function defaultUnitFor(product) {
+        const units =
+            product.units && product.units.length
+                ? product.units
+                : [{
+                      id: null,
+                      name: product.base_unit ? product.base_unit.name : 'unit',
+                      code: product.base_unit ? product.base_unit.code : '',
+                      conversion_factor: 1,
+                      is_default: true,
+                  }];
+
+        return units.find(function (u) { return u.is_default; }) || units[0];
+    }
+
+    /*
+     * Handles Enter in the product search box, which doubles as the
+     * barcode-scan field — a scanner just types the code and sends Enter.
+     *
+     * 1. Try an exact barcode/SKU match via the lookup endpoint (fast,
+     *    unambiguous — this is what makes scanning work at all, since the
+     *    on-screen grid only ever searches by name/SKU substring).
+     * 2. Fall back to adding the first visible name/SKU search result, for
+     *    cashiers who type a partial product name instead of scanning.
+     */
+    async function addTopMatchOrScannedCodeToCart(rawValue) {
+        const code = (rawValue || '').trim();
+
+        if (code) {
+            try {
+                const response = await apiFetch('/pos/products/lookup?code=' + encodeURIComponent(code));
+                const product = response.data;
+
+                if (product.stock_quantity > 0) {
+                    addToCart(product, defaultUnitFor(product));
+                    document.getElementById('search-input').value = '';
+                    state.currentPage = 1;
+                    loadProducts('');
+                    return;
+                }
+
+                showError('"' + product.name + '" is out of stock.');
+                return;
+            } catch (err) {
+                // No exact barcode/SKU match — fall through to the
+                // substring search below.
+            }
+        }
+
+        const topProduct = (state.visibleProducts || [])[0];
+
+        if (!topProduct || topProduct.stock_quantity <= 0) {
+            return;
+        }
+
+        addToCart(topProduct, defaultUnitFor(topProduct));
     }
 
     function addToCart(product, unit) {
@@ -2424,7 +3030,14 @@
             document.getElementById('account-name').textContent = user ? user.name : '-';
             document.getElementById('new-name').value = user ? user.name : '';
             document.getElementById('account-email').textContent = user ? user.email : '-';
-            document.getElementById('account-role').textContent = user ? capitalize(user.role) : '-';
+            document.getElementById('new-email').value = user ? user.email : '';
+
+            const avatar = document.getElementById('account-avatar');
+            avatar.textContent = user && user.name ? user.name.trim().charAt(0).toUpperCase() : '?';
+
+            const roleBadge = document.getElementById('account-role-badge');
+            roleBadge.className = 'role-badge' + (user ? ' role-' + user.role : '');
+            roleBadge.textContent = user ? capitalize(user.role) : '';
 
             if (user && user.must_change_password) {
                 document.getElementById('forced-change-notice').hidden = false;
@@ -2442,8 +3055,7 @@
         // happens.
         document.getElementById('account-nav-actions').addEventListener('click', function (e) {
             if (e.target.closest('#logout-btn')) {
-                clearSession();
-                window.location.href = '/pos/login';
+                logout();
             }
         });
 
@@ -2493,6 +3105,10 @@
         errorBox.hidden = true;
         successBox.hidden = true;
 
+        const submitBtn = e.target.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        submitBtn.classList.add('is-loading');
+
         const payload = {
             name: document.getElementById('new-name').value,
         };
@@ -2517,6 +3133,9 @@
         } catch (err) {
             errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
             errorBox.hidden = false;
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.classList.remove('is-loading');
         }
     }
 
@@ -2527,6 +3146,10 @@
         const successBox = document.getElementById('email-form-success');
         errorBox.hidden = true;
         successBox.hidden = true;
+
+        const submitBtn = e.target.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        submitBtn.classList.add('is-loading');
 
         const payload = {
             email: document.getElementById('new-email').value,
@@ -2553,6 +3176,9 @@
         } catch (err) {
             errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
             errorBox.hidden = false;
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.classList.remove('is-loading');
         }
     }
 
@@ -2572,6 +3198,10 @@
             errorBox.hidden = false;
             return;
         }
+
+        const submitBtn = e.target.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        submitBtn.classList.add('is-loading');
 
         const payload = {
             current_password: document.getElementById('current-password').value,
@@ -2605,6 +3235,9 @@
         } catch (err) {
             errorBox.textContent = err.data && err.data.message ? err.data.message : err.message;
             errorBox.hidden = false;
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.classList.remove('is-loading');
         }
     }
 
@@ -2614,6 +3247,7 @@
         initManagerPage: initManagerPage,
         initUsersPage: initUsersPage,
         initAccountPage: initAccountPage,
+        initAuditLogPage: initAuditLogPage,
     };
 })();
 
