@@ -9,11 +9,18 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('cash_sessions', function (Blueprint $table) {
-            $table->foreignId('variance_approved_by')
+            $fk = $table->foreignId('variance_approved_by')
                 ->nullable()
                 ->after('closing_cash')
-                ->constrained('users')
-                ->nullOnDelete();
+                ->constrained('users');
+
+            // SQL Server rejects a second SET NULL path to users; users are
+            // deactivated rather than deleted, so NO ACTION is equivalent.
+            if (Schema::getConnection()->getDriverName() === 'sqlsrv') {
+                $fk->noActionOnDelete();
+            } else {
+                $fk->nullOnDelete();
+            }
         });
     }
 

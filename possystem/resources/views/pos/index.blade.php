@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ config('app.name') }} - Point of Sale</title>
-    <link rel="stylesheet" href="/pos-assets/style.css?v={{ filemtime(public_path('pos-assets/style.css')) }}">
+    <link rel="stylesheet" href="{{ asset('pos-assets/style.css') }}">
 </head>
 
 <body class="pos-body">

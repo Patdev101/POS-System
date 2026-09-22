@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ config('app.name') }} - Cashier Login</title>
-    <link rel="stylesheet" href="/pos-assets/style.css?v={{ filemtime(public_path('pos-assets/style.css')) }}">
+    
+    {{-- Fixed: Uses asset() helper to respect ASSET_URL and base subdirectory --}}
+    <link rel="stylesheet" href="{{ asset('pos-assets/style.css') }}">
 </head>
 <body class="login-body">
     <div class="login-panel">
@@ -18,7 +20,7 @@
             <p class="field-error" id="email-error" hidden></p>
 
             <label for="password">Password</label>
-            <input type="password" id="password" name="password" required placeholder="••••••••">
+            <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="••••••••">
             <p class="field-error" id="password-error" hidden></p>
 
             <div id="login-error" class="error-banner" hidden></div>
@@ -30,11 +32,20 @@
         </form>
 
         <p class="login-subtitle" style="margin-top: 16px;">
-            <a href="/pos/forgot-password">Forgot your password?</a>
+            {{-- Fixed: Uses url() helper for subfolder routing --}}
+            <a href="{{ url('/pos/forgot-password') }}">Forgot your password?</a>
         </p>
     </div>
 
-    <script src="/pos-assets/app.js?v={{ filemtime(public_path('pos-assets/app.js')) }}"></script>
-    <script>Pos.initLoginPage();</script>
+    {{-- Fixed: Uses asset() helper for app.js --}}
+    <script src="{{ asset('pos-assets/app.js') }}"></script>
+    <script>
+        // Check if Pos script loaded before initializing to avoid console crashes
+        if (typeof Pos !== 'undefined') {
+            Pos.initLoginPage();
+        } else {
+            console.error('POS App JS failed to load from: ' + "{{ asset('pos-assets/app.js') }}");
+        }
+    </script>
 </body>
 </html>

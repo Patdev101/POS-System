@@ -6,14 +6,28 @@ own** — every product, price, and stock level is fetched live from the
 separate **Inventory System** (`../inventory`) over a token-authenticated
 API, and every sale deducts/restores stock there too.
 
-## Setup
+## Getting started (fresh clone)
+
+Requires PHP 8.3+ (with `sqlite3`, `pdo_sqlite`, `mbstring`, `openssl`, `curl`,
+`xml`, `zip`) and Composer 2. The database is a single SQLite file, so no
+database server is needed.
 
 ```bash
 composer install
-cp .env.example .env
+cp .env.example .env            # Windows: copy .env.example .env
 php artisan key:generate
+touch database/database.sqlite  # Windows: type nul > database\database.sqlite
 php artisan migrate
+php artisan storage:link
+php artisan pos:create-admin    # prompts for name, email, password
+php artisan serve --port=8002
 ```
+
+Open http://127.0.0.1:8002 and sign in with the admin you just created. Add
+managers and cashiers afterwards from **Manage Users**.
+
+Set `INVENTORY_API_URL` and `INVENTORY_API_TOKEN` in `.env` to connect the
+Inventory System (see below); without it the product list will be empty.
 
 ### Key `.env` values
 

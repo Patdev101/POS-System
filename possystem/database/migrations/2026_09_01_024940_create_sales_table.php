@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -13,10 +14,10 @@ return new class extends Migration
 
             $table->foreignId('user_id')
     ->constrained()
-    ->restrictOnDelete();
+    ->noActionOnDelete();
 
             $table->string('sale_number')->unique();
-            $table->string('idempotency_key')->nullable()->unique();
+            $table->string('idempotency_key')->nullable();
 
             $table->decimal('subtotal', 12, 2)->default(0);
             $table->decimal('discount', 12, 2)->default(0);
@@ -29,6 +30,16 @@ return new class extends Migration
 
             $table->timestamps();
         });
+
+        // SQL Server treats NULL as a value in a plain unique index, so
+        // only one NULL key would be allowed; use a filtered index there.
+        if (Schema::getConnection()->getDriverName() === 'sqlsrv') {
+            DB::statement('CREATE UNIQUE INDEX sales_idempotency_key_unique ON sales (idempotency_key) WHERE idempotency_key IS NOT NULL');
+        } else {
+            Schema::table('sales', function (Blueprint $table) {
+                $table->unique('idempotency_key');
+            });
+        }
     }
 
     public function down(): void
