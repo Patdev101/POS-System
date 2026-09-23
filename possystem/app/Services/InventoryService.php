@@ -48,19 +48,6 @@ class InventoryService
         return $response->json();
     }
 
-    public function getProduct(int $productId): ?array
-    {
-        $products = $this->getProducts();
-
-        foreach ($products as $product) {
-            if ((int) $product['id'] === $productId) {
-                return $product;
-            }
-        }
-
-        return null;
-    }
-
     /**
      * Confirm this POS terminal's configured tax rate (POS_TAX_RATE)
      * matches Inventory's VAT_RATE. The two are separate .env values in

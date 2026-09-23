@@ -106,17 +106,20 @@ class PosCheckoutController extends Controller
         // value — a cashier (or a tampered request) can never change or zero it out.
         $taxRate = (float) config('pos.tax_rate', 0);
 
+        // One catalog fetch per checkout, not one per cart line.
+        try {
+            $catalog = collect($inventoryService->getProducts())->keyBy(fn ($product) => (int) $product['id']);
+        } catch (\RuntimeException $e) {
+            return response()->json([
+                'message' => 'Unable to reach the inventory service. Please try again in a moment.',
+            ], 503);
+        }
+
         foreach ($validated['items'] as $item) {
             $productId = (int) $item['product_id'];
             $quantity = (float) $item['quantity'];
 
-            try {
-                $product = $inventoryService->getProduct($productId);
-            } catch (\RuntimeException $e) {
-                return response()->json([
-                    'message' => 'Unable to reach the inventory service. Please try again in a moment.',
-                ], 503);
-            }
+            $product = $catalog->get($productId);
 
             if (!$product) {
                 return response()->json([
